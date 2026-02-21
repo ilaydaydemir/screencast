@@ -27,6 +27,7 @@ export function useMediaDevices(): UseMediaDevicesReturn {
   const [permissionGranted, setPermissionGranted] = useState(false)
 
   const enumerateDevices = useCallback(async () => {
+    if (typeof window === 'undefined' || !navigator.mediaDevices) return
     try {
       const devices = await navigator.mediaDevices.enumerateDevices()
       const videoDevices = devices
@@ -59,6 +60,7 @@ export function useMediaDevices(): UseMediaDevicesReturn {
   }, [selectedCamera, selectedMic])
 
   const requestPermissions = useCallback(async (): Promise<boolean> => {
+    if (typeof window === 'undefined' || !navigator.mediaDevices) return false
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: true,

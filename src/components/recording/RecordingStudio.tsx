@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { useScreenRecorder } from '@/hooks/useScreenRecorder'
 import { useMediaDevices } from '@/hooks/useMediaDevices'
@@ -34,7 +34,7 @@ export function RecordingStudio() {
   const recorder = useScreenRecorder()
   const { user } = useAuth()
   const router = useRouter()
-  const supabase = createClient()
+  const supabase = useMemo(() => createClient(), [])
 
   const handleStart = useCallback(async () => {
     if (!permissionGranted) {

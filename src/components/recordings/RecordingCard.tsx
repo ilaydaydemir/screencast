@@ -30,9 +30,8 @@ export function RecordingCard({ recording, onDelete }: RecordingCardProps) {
         .getPublicUrl(recording.thumbnail_path).data.publicUrl
     : null
 
-  const shareUrl = `${window.location.origin}/watch/${recording.share_id}`
-
   const copyShareLink = async () => {
+    const shareUrl = `${window.location.origin}/watch/${recording.share_id}`
     await navigator.clipboard.writeText(shareUrl)
   }
 

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import type { Database } from '@/lib/supabase/types'
 
@@ -9,7 +9,7 @@ type Recording = Database['public']['Tables']['recordings']['Row']
 export function useRecordings() {
   const [recordings, setRecordings] = useState<Recording[]>([])
   const [loading, setLoading] = useState(true)
-  const supabase = createClient()
+  const supabase = useMemo(() => createClient(), [])
 
   const fetchRecordings = useCallback(async () => {
     setLoading(true)
@@ -33,7 +33,6 @@ export function useRecordings() {
       const recording = recordings.find((r) => r.id === id)
       if (!recording) return
 
-      // Delete storage files
       const filesToDelete = [recording.storage_path, recording.thumbnail_path].filter(
         Boolean
       ) as string[]
