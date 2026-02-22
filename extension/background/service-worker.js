@@ -55,6 +55,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       });
       return true;
 
+    case 'enumerateDevices':
+      (async () => {
+        await ensureOffscreenDocument();
+        const result = await forwardToOffscreen({ action: 'enumerateDevices' });
+        sendResponse(result);
+      })();
+      return true;
+
     // From offscreen
     case 'recordingStopped':
       recordingState = 'stopped';

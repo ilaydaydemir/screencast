@@ -62,8 +62,44 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       chunks = [];
       sendResponse({ success: true });
       return false;
+
+    case 'enumerateDevices':
+      handleEnumerateDevices().then(sendResponse);
+      return true;
   }
 });
+
+// === Device Enumeration (runs in offscreen where getUserMedia works) ===
+async function handleEnumerateDevices() {
+  try {
+    // Request permission to get labels and deviceIds
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      stream.getTracks().forEach(t => t.stop());
+    } catch {
+      try {
+        const vs = await navigator.mediaDevices.getUserMedia({ video: true });
+        vs.getTracks().forEach(t => t.stop());
+      } catch {}
+      try {
+        const as = await navigator.mediaDevices.getUserMedia({ audio: true });
+        as.getTracks().forEach(t => t.stop());
+      } catch {}
+    }
+
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const cameras = devices
+      .filter(d => d.kind === 'videoinput' && d.deviceId)
+      .map(d => ({ deviceId: d.deviceId, label: d.label || `Camera ${d.deviceId.slice(0, 8)}` }));
+    const mics = devices
+      .filter(d => d.kind === 'audioinput' && d.deviceId)
+      .map(d => ({ deviceId: d.deviceId, label: d.label || `Microphone ${d.deviceId.slice(0, 8)}` }));
+
+    return { success: true, cameras, mics };
+  } catch (err) {
+    return { success: false, cameras: [], mics: [], error: err.message };
+  }
+}
 
 function getSupportedMimeType() {
   for (const mt of SUPPORTED_MIME_TYPES) {

@@ -83,36 +83,23 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 });
 
-// === Device Enumeration ===
+// === Device Enumeration (via offscreen document) ===
 async function enumerateDevices() {
-  // Request permissions - try both, then individually if needed
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-    stream.getTracks().forEach(t => t.stop());
-  } catch {
-    // Try video and audio separately
-    try {
-      const vs = await navigator.mediaDevices.getUserMedia({ video: true });
-      vs.getTracks().forEach(t => t.stop());
-    } catch {}
-    try {
-      const as = await navigator.mediaDevices.getUserMedia({ audio: true });
-      as.getTracks().forEach(t => t.stop());
-    } catch {}
-  }
+    const result = await sendMessage({ action: 'enumerateDevices' });
+    if (!result || !result.success) {
+      console.warn('Device enumeration failed:', result?.error);
+      return;
+    }
 
-  // Always enumerate devices (labels available after permission grant)
-  try {
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    const cameras = devices.filter(d => d.kind === 'videoinput');
-    const mics = devices.filter(d => d.kind === 'audioinput');
+    const { cameras, mics } = result;
 
     // Populate camera select
     cameraSelect.innerHTML = '<option value="">No Camera</option>';
     cameras.forEach(cam => {
       const opt = document.createElement('option');
       opt.value = cam.deviceId;
-      opt.textContent = cam.label || `Camera ${cam.deviceId.slice(0, 8)}`;
+      opt.textContent = cam.label;
       cameraSelect.appendChild(opt);
     });
 
@@ -121,7 +108,7 @@ async function enumerateDevices() {
     mics.forEach(mic => {
       const opt = document.createElement('option');
       opt.value = mic.deviceId;
-      opt.textContent = mic.label || `Microphone ${mic.deviceId.slice(0, 8)}`;
+      opt.textContent = mic.label;
       micSelect.appendChild(opt);
     });
 
