@@ -87,12 +87,15 @@ document.addEventListener('DOMContentLoaded', async () => {
 async function enumerateDevices() {
   try {
     const result = await sendMessage({ action: 'enumerateDevices' });
-    if (!result || !result.success) {
-      console.warn('Device enumeration failed:', result?.error);
+
+    if (!result || !result.success || (result.cameras.length === 0 && result.mics.length === 0)) {
+      // No permission or no devices - show permission prompt
+      showPermissionPrompt();
       return;
     }
 
     const { cameras, mics } = result;
+    hidePermissionPrompt();
 
     // Populate camera select
     cameraSelect.innerHTML = '<option value="">No Camera</option>';
@@ -123,7 +126,37 @@ async function enumerateDevices() {
     }
   } catch (err) {
     console.warn('Device enumeration failed:', err);
+    showPermissionPrompt();
   }
+}
+
+function showPermissionPrompt() {
+  let banner = document.getElementById('permission-banner');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'permission-banner';
+    banner.innerHTML = `
+      <p style="margin:0 0 10px;font-size:13px;color:#ccc;">Camera & microphone access is needed for recording.</p>
+      <button id="grant-permission-btn" style="
+        width:100%;padding:10px;background:#e54545;color:#fff;border:none;
+        border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;
+      ">Grant Camera & Mic Access</button>
+    `;
+    banner.style.cssText = 'padding:12px 16px;background:#1a1a1a;border-radius:10px;margin:0 0 12px;text-align:center;';
+    const setupView = document.getElementById('setup-view');
+    const firstSection = setupView.querySelector('.section');
+    setupView.insertBefore(banner, firstSection);
+
+    document.getElementById('grant-permission-btn').addEventListener('click', () => {
+      chrome.tabs.create({ url: chrome.runtime.getURL('permissions/permissions.html') });
+    });
+  }
+  banner.style.display = 'block';
+}
+
+function hidePermissionPrompt() {
+  const banner = document.getElementById('permission-banner');
+  if (banner) banner.style.display = 'none';
 }
 
 // === Camera Preview ===

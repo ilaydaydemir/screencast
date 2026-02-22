@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Screencast - Allow Access</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0a0a0a;
+      color: #fff;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+    }
+    .container {
+      text-align: center;
+      max-width: 480px;
+      padding: 48px 32px;
+    }
+    .icon {
+      width: 80px;
+      height: 80px;
+      background: #1a1a1a;
+      border-radius: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto 24px;
+    }
+    .icon svg { color: #e54545; }
+    h1 {
+      font-size: 24px;
+      font-weight: 600;
+      margin-bottom: 12px;
+    }
+    p {
+      color: #888;
+      font-size: 15px;
+      line-height: 1.5;
+      margin-bottom: 32px;
+    }
+    #allow-btn {
+      background: #e54545;
+      color: #fff;
+      border: none;
+      padding: 14px 40px;
+      border-radius: 10px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    #allow-btn:hover { background: #d03030; }
+    #allow-btn:disabled {
+      background: #333;
+      cursor: default;
+    }
+    #status {
+      margin-top: 20px;
+      font-size: 14px;
+      color: #888;
+    }
+    .success { color: #4ade80 !important; }
+    .error { color: #f87171 !important; }
+    .preview-container {
+      margin-top: 24px;
+      display: none;
+    }
+    .preview-container.visible { display: block; }
+    video {
+      width: 160px;
+      height: 160px;
+      border-radius: 50%;
+      object-fit: cover;
+      transform: scaleX(-1);
+      border: 3px solid rgba(255,255,255,0.9);
+      box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+    }
+    #done-btn {
+      display: none;
+      margin-top: 24px;
+      background: #222;
+      color: #fff;
+      border: 1px solid #333;
+      padding: 12px 32px;
+      border-radius: 10px;
+      font-size: 15px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    #done-btn:hover { background: #333; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="icon">
+      <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <polygon points="23 7 16 12 23 17 23 7"/>
+        <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+      </svg>
+    </div>
+    <h1>Allow Camera & Microphone</h1>
+    <p>Screencast needs access to your camera and microphone to record. Click the button below and allow access when Chrome asks.</p>
+    <button id="allow-btn">Allow Access</button>
+    <div id="status"></div>
+    <div id="preview" class="preview-container">
+      <video id="camera-feed" autoplay playsinline muted></video>
+    </div>
+    <button id="done-btn">Done — Close this tab</button>
+  </div>
+  <script src="permissions.js"></script>
+</body>
+</html>
