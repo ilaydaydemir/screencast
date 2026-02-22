@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Setup View -->
+    <div id="setup-view">
+      <div class="header">
+        <div class="logo">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+          <span>Screencast</span>
+        </div>
+      </div>
+
+      <div class="section">
+        <label class="section-label">Recording Mode</label>
+        <div id="mode-picker">
+          <button data-mode="tab" class="mode-btn active">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+            Current Tab
+          </button>
+          <button data-mode="full-screen" class="mode-btn">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+            Full Screen
+          </button>
+          <button data-mode="window" class="mode-btn">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><line x1="2" y1="8" x2="22" y2="8"/></svg>
+            Window
+          </button>
+          <button data-mode="camera-only" class="mode-btn">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+            Camera Only
+          </button>
+        </div>
+      </div>
+
+      <div class="section">
+        <label class="section-label">Camera</label>
+        <div id="camera-preview-container">
+          <video id="camera-preview" autoplay playsinline muted></video>
+          <div id="no-camera-msg">No Camera</div>
+        </div>
+        <select id="camera-select">
+          <option value="">No Camera</option>
+        </select>
+      </div>
+
+      <div class="section">
+        <label class="section-label">Microphone</label>
+        <select id="mic-select">
+          <option value="">No Microphone</option>
+        </select>
+        <div id="audio-level">
+          <div id="audio-level-bar"></div>
+        </div>
+      </div>
+
+      <button id="start-btn" class="primary-btn">Start Recording</button>
+      <p class="hint">5 min recording limit</p>
+    </div>
+
+    <!-- Recording View -->
+    <div id="recording-view" style="display:none;">
+      <div class="recording-header">
+        <div class="rec-indicator">
+          <div class="rec-dot"></div>
+          <span id="timer">0:00</span>
+        </div>
+      </div>
+      <div class="recording-actions">
+        <button id="pause-btn" class="action-btn">Pause</button>
+        <button id="stop-btn" class="action-btn stop">Stop Recording</button>
+      </div>
+    </div>
+
+    <!-- Done View -->
+    <div id="done-view" style="display:none;">
+      <div class="done-header">
+        <span class="done-icon">&#10003;</span>
+        <span>Recording Complete</span>
+      </div>
+      <p id="recording-info" class="recording-info"></p>
+      <input id="title-input" type="text" placeholder="Recording title..." class="title-input">
+      <div class="done-actions">
+        <button id="download-btn" class="action-btn">Download</button>
+        <button id="upload-btn" class="primary-btn">Save to Screencast</button>
+      </div>
+      <button id="discard-btn" class="discard-btn">Discard</button>
+      <div id="upload-progress" style="display:none;">
+        <div id="upload-bar"></div>
+      </div>
+    </div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

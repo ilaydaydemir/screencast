@@ -1,0 +1,306 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  width: 320px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: #0a0a0a;
+  color: #fafafa;
+  font-size: 13px;
+}
+
+#app {
+  padding: 16px;
+}
+
+.header {
+  margin-bottom: 16px;
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.section {
+  margin-bottom: 14px;
+}
+
+.section-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 500;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 8px;
+}
+
+/* Mode Picker */
+#mode-picker {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.mode-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid #333;
+  border-radius: 8px;
+  background: transparent;
+  color: #ccc;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.mode-btn:hover {
+  border-color: #555;
+  background: #1a1a1a;
+}
+
+.mode-btn.active {
+  border-color: #fff;
+  background: #fff;
+  color: #000;
+}
+
+.mode-btn.active svg {
+  stroke: #000;
+}
+
+/* Camera Preview */
+#camera-preview-container {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16/9;
+  background: #1a1a1a;
+  border-radius: 8px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+#camera-preview {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scaleX(-1);
+}
+
+#no-camera-msg {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #555;
+  font-size: 12px;
+}
+
+/* Selects */
+select {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #333;
+  border-radius: 6px;
+  background: #1a1a1a;
+  color: #fafafa;
+  font-size: 12px;
+  outline: none;
+  cursor: pointer;
+}
+
+select:focus {
+  border-color: #555;
+}
+
+/* Audio Level */
+#audio-level {
+  height: 4px;
+  background: #1a1a1a;
+  border-radius: 2px;
+  margin-top: 8px;
+  overflow: hidden;
+}
+
+#audio-level-bar {
+  height: 100%;
+  width: 0%;
+  background: #22c55e;
+  border-radius: 2px;
+  transition: width 0.05s;
+}
+
+/* Buttons */
+.primary-btn {
+  width: 100%;
+  padding: 12px;
+  border: none;
+  border-radius: 8px;
+  background: #ef4444;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.primary-btn:hover {
+  background: #dc2626;
+}
+
+.primary-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.action-btn {
+  flex: 1;
+  padding: 10px;
+  border: 1px solid #333;
+  border-radius: 8px;
+  background: #1a1a1a;
+  color: #fafafa;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.action-btn:hover {
+  border-color: #555;
+  background: #252525;
+}
+
+.action-btn.stop {
+  background: #ef4444;
+  border-color: #ef4444;
+}
+
+.action-btn.stop:hover {
+  background: #dc2626;
+}
+
+.hint {
+  text-align: center;
+  color: #555;
+  font-size: 11px;
+  margin-top: 8px;
+}
+
+/* Recording View */
+.recording-header {
+  text-align: center;
+  padding: 24px 0;
+}
+
+.rec-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 28px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.rec-dot {
+  width: 12px;
+  height: 12px;
+  background: #ef4444;
+  border-radius: 50%;
+  animation: pulse 1s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.recording-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* Done View */
+.done-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.done-icon {
+  color: #22c55e;
+  font-size: 18px;
+}
+
+.recording-info {
+  color: #888;
+  font-size: 12px;
+  margin-bottom: 12px;
+}
+
+.title-input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #333;
+  border-radius: 6px;
+  background: #1a1a1a;
+  color: #fafafa;
+  font-size: 13px;
+  outline: none;
+  margin-bottom: 12px;
+}
+
+.title-input:focus {
+  border-color: #555;
+}
+
+.done-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.discard-btn {
+  width: 100%;
+  padding: 8px;
+  border: none;
+  background: transparent;
+  color: #666;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.discard-btn:hover {
+  color: #ef4444;
+}
+
+/* Upload Progress */
+#upload-progress {
+  height: 4px;
+  background: #1a1a1a;
+  border-radius: 2px;
+  overflow: hidden;
+  margin-top: 8px;
+}
+
+#upload-bar {
+  height: 100%;
+  width: 0%;
+  background: #3b82f6;
+  border-radius: 2px;
+  transition: width 0.3s;
+}
