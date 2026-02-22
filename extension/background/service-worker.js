@@ -86,7 +86,7 @@ async function handleStartRecording({ mode, cameraId, micId }) {
     if (mode === 'tab') {
       return await startTabRecording(tab, cameraId, micId);
     } else if (mode === 'full-screen' || mode === 'window') {
-      return await startDesktopRecording(mode, cameraId, micId);
+      return await startDesktopRecording(mode, tab, cameraId, micId);
     } else if (mode === 'camera-only') {
       return await startCameraOnlyRecording(cameraId, micId);
     }
@@ -130,10 +130,10 @@ async function startTabRecording(tab, cameraId, micId) {
 }
 
 // === Desktop/Window Recording ===
-async function startDesktopRecording(mode, cameraId, micId) {
+async function startDesktopRecording(mode, tab, cameraId, micId) {
   return new Promise((resolve) => {
     const sources = mode === 'full-screen' ? ['screen'] : ['window'];
-    chrome.desktopCapture.chooseDesktopMedia(sources, async (streamId) => {
+    chrome.desktopCapture.chooseDesktopMedia(sources, tab, async (streamId) => {
       if (!streamId) {
         resolve({ success: false, error: 'Source selection cancelled' });
         return;
