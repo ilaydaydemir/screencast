@@ -1,5 +1,5 @@
 // === Constants ===
-const MAX_DURATION = 300;
+const MAX_DURATION = 3600;
 
 // === State ===
 let currentMode = 'tab';
@@ -33,6 +33,14 @@ const uploadBar = document.getElementById('upload-bar');
 
 // === Init ===
 document.addEventListener('DOMContentLoaded', async () => {
+  // Always attach button listeners first
+  startBtn.addEventListener('click', startRecording);
+  pauseBtn.addEventListener('click', togglePause);
+  stopBtn.addEventListener('click', stopRecording);
+  downloadBtn.addEventListener('click', downloadRecording);
+  uploadBtn.addEventListener('click', uploadRecording);
+  discardBtn.addEventListener('click', discardRecording);
+
   // Sync auth from web app if not stored yet
   await syncAuthFromWebApp();
 
@@ -73,23 +81,28 @@ document.addEventListener('DOMContentLoaded', async () => {
   micSelect.addEventListener('change', () => {
     startAudioLevel(micSelect.value);
   });
-
-  // Buttons
-  startBtn.addEventListener('click', startRecording);
-  pauseBtn.addEventListener('click', togglePause);
-  stopBtn.addEventListener('click', stopRecording);
-  downloadBtn.addEventListener('click', downloadRecording);
-  uploadBtn.addEventListener('click', uploadRecording);
-  discardBtn.addEventListener('click', discardRecording);
 });
 
 // === Device Enumeration ===
 async function enumerateDevices() {
+  // Request permissions - try both, then individually if needed
   try {
-    // Request permissions
     const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
     stream.getTracks().forEach(t => t.stop());
+  } catch {
+    // Try video and audio separately
+    try {
+      const vs = await navigator.mediaDevices.getUserMedia({ video: true });
+      vs.getTracks().forEach(t => t.stop());
+    } catch {}
+    try {
+      const as = await navigator.mediaDevices.getUserMedia({ audio: true });
+      as.getTracks().forEach(t => t.stop());
+    } catch {}
+  }
 
+  // Always enumerate devices (labels available after permission grant)
+  try {
     const devices = await navigator.mediaDevices.enumerateDevices();
     const cameras = devices.filter(d => d.kind === 'videoinput');
     const mics = devices.filter(d => d.kind === 'audioinput');

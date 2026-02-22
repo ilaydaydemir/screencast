@@ -161,8 +161,17 @@ async function createBubble(cameraId) {
       });
       bubbleStream = stream;
       video.srcObject = stream;
-    } catch (err) {
-      console.error('[Screencast] Webcam failed:', err);
+    } catch {
+      // Fallback: try any camera if exact deviceId fails
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 480 }, height: { ideal: 480 } },
+        });
+        bubbleStream = stream;
+        video.srcObject = stream;
+      } catch (err) {
+        console.error('[Screencast] Webcam failed:', err);
+      }
     }
   }
 

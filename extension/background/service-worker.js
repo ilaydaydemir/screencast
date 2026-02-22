@@ -197,7 +197,7 @@ function startTimer() {
   timerInterval = setInterval(() => {
     elapsedSeconds++;
     chrome.runtime.sendMessage({ action: 'timerSync', elapsed: elapsedSeconds }).catch(() => {});
-    if (elapsedSeconds >= 300) {
+    if (elapsedSeconds >= 3600) {
       handleStopRecording();
     }
   }, 1000);

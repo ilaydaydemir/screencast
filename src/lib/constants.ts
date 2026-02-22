@@ -1,4 +1,4 @@
-export const MAX_RECORDING_DURATION_SECONDS = 300 // 5 minutes
+export const MAX_RECORDING_DURATION_SECONDS = 3600 // 60 minutes
 export const MAX_FILE_SIZE_BYTES = 500 * 1024 * 1024 // 500MB
 
 export const SUPPORTED_MIME_TYPES = [
