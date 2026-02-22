@@ -34,7 +34,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
 
     case 'stopRecording':
-      handleStop().then(() => sendResponse({ success: true }));
+      handleStop().then(result => sendResponse(result));
       return true;
 
     case 'pauseRecording':
@@ -310,10 +310,20 @@ function startMediaRecorder(stream) {
 }
 
 // === Stop ===
-async function handleStop() {
-  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+function handleStop() {
+  return new Promise((resolve) => {
+    if (!mediaRecorder || mediaRecorder.state === 'inactive') {
+      resolve({ success: true, blobSize: recordedBlob?.size || 0 });
+      return;
+    }
+    // Wait for onstop to fire (blob is created there) before resolving
+    const origOnStop = mediaRecorder.onstop;
+    mediaRecorder.onstop = (e) => {
+      if (origOnStop) origOnStop(e);
+      resolve({ success: true, blobSize: recordedBlob?.size || 0 });
+    };
     mediaRecorder.stop();
-  }
+  });
 }
 
 // === Download ===

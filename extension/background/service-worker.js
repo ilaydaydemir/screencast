@@ -97,20 +97,27 @@ async function handleStartRecording({ mode, cameraId, micId }) {
   }
 }
 
-// === Tab Recording ===
-async function startTabRecording(tab, cameraId, micId) {
-  // Inject content script for webcam bubble
-  if (cameraId) {
+// === Inject Webcam Bubble ===
+async function injectWebcamBubble(tab, cameraId) {
+  if (!cameraId) return;
+  try {
     await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       files: ['content/content.js'],
     });
-
-    // Wait for injection then show bubble
     await new Promise(r => setTimeout(r, 200));
     await chrome.tabs.sendMessage(tab.id, { action: 'showBubble', cameraId });
-    await new Promise(r => setTimeout(r, 500)); // Wait for bubble to render
+    await new Promise(r => setTimeout(r, 500));
+  } catch {
+    // Can't inject into chrome:// or other restricted pages
+    console.warn('Could not inject webcam bubble into this tab');
   }
+}
+
+// === Tab Recording ===
+async function startTabRecording(tab, cameraId, micId) {
+  // Inject webcam bubble into page (captured by tabCapture)
+  await injectWebcamBubble(tab, cameraId);
 
   // Get tab capture stream ID
   const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tab.id });
@@ -131,10 +138,15 @@ async function startTabRecording(tab, cameraId, micId) {
 
 // === Desktop/Window Recording ===
 async function startDesktopRecording(mode, tab, cameraId, micId) {
+  // Inject webcam bubble so user can see themselves
+  await injectWebcamBubble(tab, cameraId);
+
   return new Promise((resolve) => {
     const sources = mode === 'full-screen' ? ['screen'] : ['window'];
     chrome.desktopCapture.chooseDesktopMedia(sources, tab, async (streamId) => {
       if (!streamId) {
+        // Remove bubble if user cancelled
+        try { await chrome.tabs.sendMessage(tab.id, { action: 'removeBubble' }); } catch {}
         resolve({ success: false, error: 'Source selection cancelled' });
         return;
       }
@@ -172,16 +184,16 @@ async function startCameraOnlyRecording(cameraId, micId) {
 async function handleStopRecording() {
   clearInterval(timerInterval);
 
-  // Remove bubble from tab
-  if (currentMode === 'tab' && activeTabId) {
+  // Remove bubble from tab (all modes that had one)
+  if (activeTabId) {
     try {
       await chrome.tabs.sendMessage(activeTabId, { action: 'removeBubble' });
-    } catch { /* tab may be closed */ }
+    } catch { /* tab may be closed or no bubble */ }
   }
 
-  await forwardToOffscreen({ action: 'stopRecording' });
+  const stopResult = await forwardToOffscreen({ action: 'stopRecording' });
   recordingState = 'stopped';
-  return { success: true, elapsed: elapsedSeconds };
+  return { success: true, elapsed: elapsedSeconds, blobSize: stopResult?.blobSize || 0 };
 }
 
 // === Pause/Resume ===
