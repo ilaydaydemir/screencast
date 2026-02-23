@@ -355,7 +355,7 @@ async function handleStart({ mode, tabCaptureStreamId, desktopStreamId, cameraId
   if (mode === 'tab') {
     await startTabMode(tabCaptureStreamId, micId);
   } else if (mode === 'full-screen' || mode === 'window') {
-    await startDesktopMode(desktopStreamId, cameraId, micId);
+    await startDesktopMode(mode, cameraId, micId);
   } else if (mode === 'camera-only') {
     await startCameraOnlyMode(cameraId, micId);
   }
@@ -406,20 +406,25 @@ async function startTabMode(streamId, micId) {
 }
 
 // === Desktop/Window Mode (Canvas Compositing) ===
-async function startDesktopMode(streamId, cameraId, micId) {
-  screenStream = await navigator.mediaDevices.getUserMedia({
-    audio: {
-      mandatory: {
-        chromeMediaSource: 'desktop',
-        chromeMediaSourceId: streamId,
-      },
-    },
-    video: {
-      mandatory: {
-        chromeMediaSource: 'desktop',
-        chromeMediaSourceId: streamId,
-      },
-    },
+async function startDesktopMode(mode, cameraId, micId) {
+  // Use getDisplayMedia directly — requires user gesture via click overlay
+  const overlay = document.getElementById('start-overlay');
+  overlay.style.display = 'flex';
+
+  screenStream = await new Promise((resolve, reject) => {
+    overlay.addEventListener('click', async () => {
+      overlay.style.display = 'none';
+      try {
+        const displaySurface = mode === 'window' ? 'window' : 'monitor';
+        const stream = await navigator.mediaDevices.getDisplayMedia({
+          video: { displaySurface },
+          audio: true,
+        });
+        resolve(stream);
+      } catch (err) {
+        reject(err);
+      }
+    }, { once: true });
   });
 
   const screenVideo = document.getElementById('screen-video');

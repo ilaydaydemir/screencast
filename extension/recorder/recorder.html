@@ -48,8 +48,17 @@
   <video id="webcam-video" autoplay playsinline muted style="display:none;"></video>
   <canvas id="composite-canvas" style="display:none;"></canvas>
 
+  <!-- Click-to-start overlay for desktop/window modes (getDisplayMedia needs user gesture) -->
+  <div id="start-overlay" style="display:none; position:fixed; inset:0; background:#111; z-index:100; display:none; align-items:center; justify-content:center; cursor:pointer;">
+    <div style="text-align:center;">
+      <div style="font-size:48px; margin-bottom:16px;">🖥️</div>
+      <h2 style="margin:0 0 8px; font-size:22px;">Click anywhere to start screen capture</h2>
+      <p style="color:#999; margin:0; font-size:14px;">A picker will appear to select your screen or window</p>
+    </div>
+  </div>
+
   <!-- Minimal status UI -->
-  <div class="status">
+  <div class="status" id="recording-status">
     <h2><span class="rec-indicator"></span>Recording in progress</h2>
     <p>Do not close this tab.</p>
   </div>

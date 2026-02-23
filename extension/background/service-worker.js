@@ -557,46 +557,34 @@ async function startTabRecording(tab, cameraId, micId, recordingId, auth) {
 
 // === Desktop/Window Recording ===
 async function startDesktopRecording(mode, tab, cameraId, micId, recordingId, auth) {
+  // Focus the recorder tab — getDisplayMedia() needs a user gesture there
+  await chrome.tabs.update(recorderTabId, { active: true });
+
+  // Send start message — recorder tab will show a "click to start" overlay,
+  // then call getDisplayMedia() directly (no chooseDesktopMedia needed)
+  const result = await forwardToRecorderTab({
+    action: 'startRecording',
+    mode: mode,
+    cameraId,
+    micId,
+    recordingId,
+    userId: auth.userId,
+    authToken: auth.authToken,
+  });
+
+  if (!result || !result.success) {
+    console.error('[SW] Recorder failed to start desktop capture:', result?.error);
+    return { success: false, error: result?.error || 'Recorder failed to start' };
+  }
+
+  // Now inject bubble on the original tab and switch back to it
   await injectBubbleAndToolbar(tab.id, cameraId, 0, false);
   bubbleTabId = tab.id;
+  await chrome.tabs.update(tab.id, { active: true });
 
-  const recorderTab = await chrome.tabs.get(recorderTabId);
-  return new Promise((resolve) => {
-    const sources = mode === 'full-screen' ? ['screen'] : ['window'];
-    // Pass the recorder tab as targetTab so the stream is bound to it
-    // (the recorder tab is where getUserMedia will consume the stream).
-    chrome.desktopCapture.chooseDesktopMedia(sources, recorderTab, async (streamId) => {
-      if (!streamId) {
-        await removeBubble(tab.id);
-        bubbleTabId = null;
-        resolve({ success: false, error: 'Source selection cancelled' });
-        return;
-      }
-
-      const result = await forwardToRecorderTab({
-        action: 'startRecording',
-        mode: mode,
-        desktopStreamId: streamId,
-        cameraId,
-        micId,
-        recordingId,
-        userId: auth.userId,
-        authToken: auth.authToken,
-      });
-
-      if (!result || !result.success) {
-        console.error('[SW] Recorder failed to start desktop capture:', result?.error);
-        await removeBubble(tab.id);
-        bubbleTabId = null;
-        resolve({ success: false, error: result?.error || 'Recorder failed to start' });
-        return;
-      }
-
-      startTimer();
-      recordingState = 'recording';
-      resolve({ success: true });
-    });
-  });
+  startTimer();
+  recordingState = 'recording';
+  return { success: true };
 }
 
 // === Camera Only ===
