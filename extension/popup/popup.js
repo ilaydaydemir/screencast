@@ -448,17 +448,60 @@ async function stopRecording() {
   }
 }
 
-// === Download ===
+// === Download (direct from IndexedDB — no offscreen dependency) ===
 async function downloadRecording() {
-  const title = titleInput.value || 'recording';
+  const title = titleInput.value || generateTitle();
   downloadBtn.disabled = true;
   downloadBtn.textContent = 'Downloading...';
-  const result = await sendMessage({ action: 'downloadRecording', title });
+
+  // Try direct IDB download first (most reliable — same origin as offscreen)
+  let blob = await loadBlobFromIDB();
+
+  if (!blob) {
+    // Fallback: try via offscreen document
+    const result = await sendMessage({ action: 'downloadRecording', title });
+    downloadBtn.disabled = false;
+    downloadBtn.textContent = 'Download';
+    if (result && !result.success) {
+      recordingInfo.innerHTML = `<div style="color:#f87171;font-size:13px;">${result.error || 'Download failed'}</div>`;
+    }
+    return;
+  }
+
+  // Download blob directly from popup
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${title}.webm`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
   downloadBtn.disabled = false;
   downloadBtn.textContent = 'Download';
-  if (result && !result.success) {
-    recordingInfo.innerHTML = `<div style="color:#f87171;font-size:13px;">${result.error || 'Download failed'}</div>`;
-  }
+}
+
+function generateTitle() {
+  const now = new Date();
+  return 'Recording - ' + now.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) + ' ' + now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+}
+
+// === IndexedDB access (popup shares same origin as offscreen) ===
+function loadBlobFromIDB() {
+  return new Promise((resolve) => {
+    try {
+      const req = indexedDB.open('screencast', 1);
+      req.onupgradeneeded = (e) => { e.target.result.createObjectStore('blobs'); };
+      req.onsuccess = (e) => {
+        const db = e.target.result;
+        const tx = db.transaction('blobs', 'readonly');
+        const getReq = tx.objectStore('blobs').get('recording');
+        getReq.onsuccess = () => { db.close(); resolve(getReq.result || null); };
+        getReq.onerror = () => { db.close(); resolve(null); };
+      };
+      req.onerror = () => resolve(null);
+    } catch { resolve(null); }
+  });
 }
 
 // === Upload ===
@@ -547,6 +590,7 @@ function showUploadFailed(error) {
     <div style="color:#999;font-size:12px;">${formatTime(elapsedSeconds)} recorded</div>
   `;
   titleInput.style.display = '';
+  if (!titleInput.value) titleInput.value = generateTitle();
   downloadBtn.parentElement.style.display = ''; // .done-actions div
   discardBtn.style.display = '';
 

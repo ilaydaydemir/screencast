@@ -72,6 +72,8 @@ function clearBlobFromIDB() {
 }
 
 // === Keep Alive: play silent audio to prevent Chrome from closing offscreen ===
+let keepAliveInterval = null;
+
 function startKeepAlive() {
   if (keepAliveCtx) return;
   keepAliveCtx = new AudioContext();
@@ -81,9 +83,20 @@ function startKeepAlive() {
   oscillator.connect(gain);
   gain.connect(keepAliveCtx.destination);
   oscillator.start();
+
+  // Periodically resume AudioContext if Chrome suspends it
+  keepAliveInterval = setInterval(() => {
+    if (keepAliveCtx && keepAliveCtx.state === 'suspended') {
+      keepAliveCtx.resume().catch(() => {});
+    }
+  }, 3000);
 }
 
 function stopKeepAlive() {
+  if (keepAliveInterval) {
+    clearInterval(keepAliveInterval);
+    keepAliveInterval = null;
+  }
   if (keepAliveCtx) {
     keepAliveCtx.close().catch(() => {});
     keepAliveCtx = null;
