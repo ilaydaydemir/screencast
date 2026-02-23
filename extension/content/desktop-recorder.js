@@ -41,6 +41,14 @@
     return;
   }
 
+  // --- Log what was actually selected ---
+  const videoTrack = screenStream.getVideoTracks()[0];
+  const trackSettings = videoTrack.getSettings();
+  console.log('[DesktopRec] Capture type:', trackSettings.displaySurface,
+    'dimensions:', trackSettings.width, 'x', trackSettings.height,
+    'frameRate:', trackSettings.frameRate);
+  // displaySurface: 'monitor' = screen, 'window' = window, 'browser' = Chrome tab
+
   // --- Get mic stream ---
   let micStream = null;
   if (micId) {
@@ -87,9 +95,16 @@
 
   const chunks = [];
   const startTime = Date.now();
+  let chunkCount = 0;
 
   recorder.ondataavailable = (e) => {
-    if (e.data.size > 0) chunks.push(e.data);
+    if (e.data.size > 0) {
+      chunks.push(e.data);
+      chunkCount++;
+      if (chunkCount % 5 === 0) {
+        console.log(`[DesktopRec] Chunk ${chunkCount}, size: ${e.data.size}, total: ${chunks.reduce((s, c) => s + c.size, 0)}`);
+      }
+    }
   };
 
   recorder.onstop = async () => {
@@ -169,9 +184,17 @@
     }
   };
 
+  // --- Keep content script alive via port connection ---
+  // Chrome may throttle/suspend background tabs. A port keeps the SW alive,
+  // and periodic messaging keeps this content script's execution context active.
+  const keepAlivePort = chrome.runtime.connect({ name: 'desktopRecorder' });
+  const keepAliveInterval = setInterval(() => {
+    try { keepAlivePort.postMessage({ alive: true, chunks: chunkCount }); } catch {}
+  }, 1000);
+
   // --- Start recording ---
   recorder.start(1000);
-  console.log('[DesktopRec] Recording started, mode:', mode);
+  console.log('[DesktopRec] Recording started, mode:', mode, 'displaySurface:', trackSettings.displaySurface);
 
   // Notify service worker
   chrome.runtime.sendMessage({ action: 'desktopRecordingStarted', recordingId });
@@ -205,6 +228,8 @@
   };
 
   function cleanup() {
+    clearInterval(keepAliveInterval);
+    try { keepAlivePort.disconnect(); } catch {}
     screenStream.getTracks().forEach(t => t.stop());
     if (micStream) micStream.getTracks().forEach(t => t.stop());
     audioContext.close().catch(() => {});
