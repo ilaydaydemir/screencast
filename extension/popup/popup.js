@@ -440,7 +440,7 @@ async function stopRecording() {
   }
 }
 
-// === Download (OPFS → IDB → offscreen fallback) ===
+// === Download (IDB direct → offscreen fallback) ===
 async function downloadRecording() {
   const title = titleInput.value || generateTitle();
 
@@ -577,30 +577,16 @@ function generateTitle() {
     + ' ' + now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
 }
 
-// === Direct storage access — works even if offscreen document is closed ===
+// === Direct IDB access — works even if offscreen document is closed ===
 
-// OPFS: Read the recording file appended chunk-by-chunk during recording
-async function loadBlobFromOPFS() {
-  try {
-    const root = await navigator.storage.getDirectory();
-    const fileHandle = await root.getFileHandle('recording.webm');
-    const file = await fileHandle.getFile();
-    if (file.size === 0) return null;
-    return file;
-  } catch {
-    return null;
-  }
-}
-
-// IDB: Read the final blob saved on stop
-function loadBlobFromIDB() {
+function idbGet(key) {
   return new Promise((resolve) => {
     const req = indexedDB.open('screencast', 1);
     req.onupgradeneeded = (e) => { e.target.result.createObjectStore('blobs'); };
     req.onsuccess = (e) => {
       const db = e.target.result;
       const tx = db.transaction('blobs', 'readonly');
-      const getReq = tx.objectStore('blobs').get('recording');
+      const getReq = tx.objectStore('blobs').get(key);
       getReq.onsuccess = () => { db.close(); resolve(getReq.result || null); };
       getReq.onerror = () => { db.close(); resolve(null); };
     };
@@ -608,11 +594,25 @@ function loadBlobFromIDB() {
   });
 }
 
-// Try all sources: OPFS → IDB
+// Try: final blob → reconstruct from per-chunk saves
 async function loadRecordingBlob() {
-  const opfs = await loadBlobFromOPFS();
-  if (opfs) return opfs;
-  return await loadBlobFromIDB();
+  // 1. Try the complete final blob (saved on stop)
+  const final = await idbGet('recording');
+  if (final) return final;
+
+  // 2. Reconstruct from chunks saved every second during recording
+  const meta = await idbGet('chunk-meta');
+  if (!meta || !meta.count) return null;
+
+  const parts = [];
+  for (let i = 0; i < meta.count; i++) {
+    const chunk = await idbGet(`chunk-${i}`);
+    if (chunk) parts.push(chunk);
+    else break;
+  }
+
+  if (parts.length === 0) return null;
+  return new Blob(parts, { type: meta.mimeType || 'video/webm' });
 }
 
 // === Auth Sync: Read Supabase token from web app ===
