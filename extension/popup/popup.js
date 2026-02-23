@@ -72,7 +72,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     showView('done');
     if (state.uploadError) {
       // Upload already failed — show manual controls with auto-generated title
-      recordingInfo.textContent = 'Upload failed. Download your recording below.';
+      recordingInfo.textContent = 'Upload error: ' + state.uploadError;
       titleInput.value = generateTitle();
     } else {
       // Auto-upload is in progress
@@ -528,7 +528,7 @@ chrome.runtime.onMessage.addListener((message) => {
   }
   if (message.action === 'autoUploadFailed') {
     // Show manual controls so user can download or retry
-    recordingInfo.textContent = `Upload failed. Download your recording below.`;
+    recordingInfo.textContent = `Upload error: ${message.error || 'Unknown'}`;
     titleInput.style.display = '';
     titleInput.value = generateTitle();
     downloadBtn.parentElement.style.display = '';

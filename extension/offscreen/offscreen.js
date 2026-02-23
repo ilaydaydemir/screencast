@@ -522,10 +522,11 @@ async function handleDownload(title) {
 
 // === Upload to Supabase ===
 async function handleUpload({ title, duration, mode }) {
-  // Try all sources: memory → final IDB blob → reconstruct from progressive batches
+  // Try all sources: memory → IDB final blob → reconstruct from IDB chunks
   const blob = await loadRecording();
-  if (!blob) return { success: false, error: 'No recording' };
+  if (!blob) return { success: false, error: 'No recording found in memory or IDB' };
   recordedBlob = blob;
+  console.log(`[Screencast] Upload starting: ${blob.size} bytes`);
 
   // Get auth from web app
   const auth = await getWebAppAuth();
@@ -556,7 +557,10 @@ async function handleUpload({ title, duration, mode }) {
       }),
     });
 
-    if (!insertRes.ok) throw new Error('Failed to create recording');
+    if (!insertRes.ok) {
+      const errBody = await insertRes.text().catch(() => '');
+      throw new Error(`DB insert failed (${insertRes.status}): ${errBody}`);
+    }
     const [recording] = await insertRes.json();
     sendProgress(20);
 
@@ -572,7 +576,10 @@ async function handleUpload({ title, duration, mode }) {
       body: recordedBlob,
     });
 
-    if (!uploadRes.ok) throw new Error('Failed to upload video');
+    if (!uploadRes.ok) {
+      const errBody = await uploadRes.text().catch(() => '');
+      throw new Error(`Storage upload failed (${uploadRes.status}): ${errBody}`);
+    }
     sendProgress(70);
 
     // 3. Generate + upload thumbnail
