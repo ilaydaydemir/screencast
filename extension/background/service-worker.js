@@ -40,16 +40,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
 
     case 'downloadRecording':
-      forwardToOffscreen({ action: 'downloadRecording', title: message.title }).then(sendResponse);
+      (async () => {
+        await ensureOffscreenDocument();
+        const result = await forwardToOffscreen({ action: 'downloadRecording', title: message.title });
+        sendResponse(result);
+      })();
       return true;
 
     case 'uploadToWebApp':
-      forwardToOffscreen({
-        action: 'uploadToWebApp',
-        title: message.title,
-        duration: message.duration,
-        mode: message.mode,
-      }).then(sendResponse);
+      (async () => {
+        await ensureOffscreenDocument();
+        const result = await forwardToOffscreen({
+          action: 'uploadToWebApp',
+          title: message.title,
+          duration: message.duration,
+          mode: message.mode,
+        });
+        sendResponse(result);
+      })();
       return true;
 
     case 'discardRecording':
@@ -528,9 +536,8 @@ async function handleStopRecording() {
 }
 
 // === Auto Upload (triggered automatically on stop) ===
+// 3 attempts: immediate → recreate offscreen (load from IDB) → refresh auth token
 async function autoUpload(duration, mode) {
-  // Don't refresh token first — go straight to upload while blob is in memory.
-  // If auth fails, we'll retry with refreshed token.
   const auth = await chrome.storage.local.get(['authToken', 'userId']);
   if (!auth.authToken || !auth.userId) {
     chrome.runtime.sendMessage({ action: 'autoUploadFailed', error: 'Not signed in' }).catch(() => {});
@@ -540,30 +547,32 @@ async function autoUpload(duration, mode) {
   const now = new Date();
   const title = 'Recording - ' + now.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) + ' ' + now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
 
-  // Upload immediately — offscreen document is alive, blob is in memory
-  const result = await forwardToOffscreen({
-    action: 'uploadToWebApp',
-    title,
-    duration: duration || 0,
-    mode: mode || 'tab',
-  });
+  const uploadMsg = { action: 'uploadToWebApp', title, duration: duration || 0, mode: mode || 'tab' };
 
+  // Attempt 1: Upload immediately — offscreen alive, blob in memory
+  let result = await forwardToOffscreen(uploadMsg);
   if (result && result.success) {
     recordingState = 'idle';
     chrome.runtime.sendMessage({ action: 'autoUploadComplete', recordingId: result.recordingId }).catch(() => {});
     return;
   }
 
-  // If auth expired, refresh token and retry once
-  if (result && result.error && result.error.includes('401')) {
+  // Attempt 2: Offscreen may have died — recreate it. New offscreen loads from IDB.
+  await ensureOffscreenDocument();
+  // Small delay to let offscreen initialize
+  await new Promise(r => setTimeout(r, 300));
+  result = await forwardToOffscreen(uploadMsg);
+  if (result && result.success) {
+    recordingState = 'idle';
+    chrome.runtime.sendMessage({ action: 'autoUploadComplete', recordingId: result.recordingId }).catch(() => {});
+    return;
+  }
+
+  // Attempt 3: Auth token may be expired — refresh and retry
+  if (result && result.error && !result.error.includes('No recording')) {
     await refreshAuthToken();
     await ensureOffscreenDocument();
-    const retry = await forwardToOffscreen({
-      action: 'uploadToWebApp',
-      title,
-      duration: duration || 0,
-      mode: mode || 'tab',
-    });
+    const retry = await forwardToOffscreen(uploadMsg);
     if (retry && retry.success) {
       recordingState = 'idle';
       chrome.runtime.sendMessage({ action: 'autoUploadComplete', recordingId: retry.recordingId }).catch(() => {});
