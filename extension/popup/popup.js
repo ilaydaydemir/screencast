@@ -70,25 +70,16 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (state && state.state === 'stopped') {
     elapsedSeconds = state.elapsed || 0;
     showView('done');
-    recordingInfo.textContent = 'Saving to Screencast...';
-    titleInput.style.display = 'none';
-    downloadBtn.parentElement.style.display = 'none';
-    discardBtn.style.display = 'none';
-    return;
-  }
-  if (state && state.state === 'uploading') {
-    elapsedSeconds = state.elapsed || 0;
-    showView('done');
-    recordingInfo.textContent = 'Saving to Screencast...';
-    titleInput.style.display = 'none';
-    downloadBtn.parentElement.style.display = 'none';
-    discardBtn.style.display = 'none';
-    return;
-  }
-  if (state && state.state === 'upload_failed') {
-    elapsedSeconds = state.elapsed || 0;
-    showView('done');
-    showUploadFailed(state.uploadError || 'Upload failed');
+    if (state.uploadError) {
+      // Upload already failed — show manual controls
+      recordingInfo.textContent = 'Upload failed: ' + state.uploadError;
+    } else {
+      // Auto-upload is in progress
+      recordingInfo.textContent = 'Saving to Screencast...';
+      titleInput.style.display = 'none';
+      downloadBtn.parentElement.style.display = 'none';
+      discardBtn.style.display = 'none';
+    }
     return;
   }
 
@@ -448,60 +439,10 @@ async function stopRecording() {
   }
 }
 
-// === Download (direct from IndexedDB — no offscreen dependency) ===
+// === Download ===
 async function downloadRecording() {
-  const title = titleInput.value || generateTitle();
-  downloadBtn.disabled = true;
-  downloadBtn.textContent = 'Downloading...';
-
-  // Try direct IDB download first (most reliable — same origin as offscreen)
-  let blob = await loadBlobFromIDB();
-
-  if (!blob) {
-    // Fallback: try via offscreen document
-    const result = await sendMessage({ action: 'downloadRecording', title });
-    downloadBtn.disabled = false;
-    downloadBtn.textContent = 'Download';
-    if (result && !result.success) {
-      recordingInfo.innerHTML = `<div style="color:#f87171;font-size:13px;">${result.error || 'Download failed'}</div>`;
-    }
-    return;
-  }
-
-  // Download blob directly from popup
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `${title}.webm`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-  downloadBtn.disabled = false;
-  downloadBtn.textContent = 'Download';
-}
-
-function generateTitle() {
-  const now = new Date();
-  return 'Recording - ' + now.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) + ' ' + now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
-}
-
-// === IndexedDB access (popup shares same origin as offscreen) ===
-function loadBlobFromIDB() {
-  return new Promise((resolve) => {
-    try {
-      const req = indexedDB.open('screencast', 1);
-      req.onupgradeneeded = (e) => { e.target.result.createObjectStore('blobs'); };
-      req.onsuccess = (e) => {
-        const db = e.target.result;
-        const tx = db.transaction('blobs', 'readonly');
-        const getReq = tx.objectStore('blobs').get('recording');
-        getReq.onsuccess = () => { db.close(); resolve(getReq.result || null); };
-        getReq.onerror = () => { db.close(); resolve(null); };
-      };
-      req.onerror = () => resolve(null);
-    } catch { resolve(null); }
-  });
+  const title = titleInput.value || 'recording';
+  await sendMessage({ action: 'downloadRecording', title });
 }
 
 // === Upload ===
@@ -537,8 +478,6 @@ async function uploadRecording() {
 // === Discard ===
 async function discardRecording() {
   await sendMessage({ action: 'discardRecording' });
-  const retryBtn = document.getElementById('retry-btn');
-  if (retryBtn) retryBtn.remove();
   showView('setup');
   startBtn.disabled = false;
   startBtn.textContent = 'Start Recording';
@@ -561,8 +500,6 @@ chrome.runtime.onMessage.addListener((message) => {
     titleInput.style.display = 'none';
     downloadBtn.parentElement.style.display = 'none';
     discardBtn.style.display = 'none';
-    const rb = document.getElementById('retry-btn');
-    if (rb) rb.style.display = 'none';
   }
   if (message.action === 'autoUploadComplete') {
     recordingInfo.textContent = 'Saved! Opening dashboard...';
@@ -572,7 +509,11 @@ chrome.runtime.onMessage.addListener((message) => {
     }, 1000);
   }
   if (message.action === 'autoUploadFailed') {
-    showUploadFailed(message.error || 'Upload failed');
+    // Show manual controls so user can download or retry
+    recordingInfo.textContent = `${formatTime(elapsedSeconds)} recorded`;
+    titleInput.style.display = '';
+    downloadBtn.parentElement.style.display = '';
+    discardBtn.style.display = '';
   }
   if (message.action === 'recordingCancelled') {
     clearInterval(timerInterval);
@@ -582,52 +523,6 @@ chrome.runtime.onMessage.addListener((message) => {
     enumerateDevices();
   }
 });
-
-// === Upload Failed: Show retry/download/discard ===
-function showUploadFailed(error) {
-  recordingInfo.innerHTML = `
-    <div style="color:#f87171;font-size:13px;margin-bottom:8px;">Upload failed: ${error}</div>
-    <div style="color:#999;font-size:12px;">${formatTime(elapsedSeconds)} recorded</div>
-  `;
-  titleInput.style.display = '';
-  if (!titleInput.value) titleInput.value = generateTitle();
-  downloadBtn.parentElement.style.display = ''; // .done-actions div
-  discardBtn.style.display = '';
-
-  // Add retry button if not already present
-  let retryBtn = document.getElementById('retry-btn');
-  if (!retryBtn) {
-    retryBtn = document.createElement('button');
-    retryBtn.id = 'retry-btn';
-    retryBtn.textContent = 'Retry Upload';
-    retryBtn.className = 'primary-btn';
-    retryBtn.style.cssText = 'width:100%;margin-bottom:8px;';
-    retryBtn.addEventListener('click', retryUpload);
-    // Insert before the .done-actions div
-    const doneActions = downloadBtn.parentElement;
-    doneActions.parentElement.insertBefore(retryBtn, doneActions);
-  }
-  retryBtn.style.display = '';
-  retryBtn.disabled = false;
-  retryBtn.textContent = 'Retry Upload';
-}
-
-async function retryUpload() {
-  const retryBtn = document.getElementById('retry-btn');
-  if (retryBtn) {
-    retryBtn.disabled = true;
-    retryBtn.textContent = 'Retrying...';
-  }
-  recordingInfo.textContent = 'Saving to Screencast...';
-  titleInput.style.display = 'none';
-  downloadBtn.parentElement.style.display = 'none';
-  discardBtn.style.display = 'none';
-  if (retryBtn) retryBtn.style.display = 'none';
-
-  const result = await sendMessage({ action: 'retryUpload' });
-  // If it fails, autoUploadFailed message will trigger showUploadFailed
-  // If it succeeds, autoUploadComplete message will open dashboard
-}
 
 // === Helpers ===
 function showView(view) {

@@ -72,8 +72,6 @@ function clearBlobFromIDB() {
 }
 
 // === Keep Alive: play silent audio to prevent Chrome from closing offscreen ===
-let keepAliveInterval = null;
-
 function startKeepAlive() {
   if (keepAliveCtx) return;
   keepAliveCtx = new AudioContext();
@@ -83,20 +81,9 @@ function startKeepAlive() {
   oscillator.connect(gain);
   gain.connect(keepAliveCtx.destination);
   oscillator.start();
-
-  // Periodically resume AudioContext if Chrome suspends it
-  keepAliveInterval = setInterval(() => {
-    if (keepAliveCtx && keepAliveCtx.state === 'suspended') {
-      keepAliveCtx.resume().catch(() => {});
-    }
-  }, 3000);
 }
 
 function stopKeepAlive() {
-  if (keepAliveInterval) {
-    clearInterval(keepAliveInterval);
-    keepAliveInterval = null;
-  }
   if (keepAliveCtx) {
     keepAliveCtx.close().catch(() => {});
     keepAliveCtx = null;
@@ -127,7 +114,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return false;
 
     case 'downloadRecording':
-      handleDownload(message.title).then(r => sendResponse(r || { success: true }));
+      handleDownload(message.title).then(() => sendResponse({ success: true }));
       return true;
 
     case 'uploadToWebApp':
@@ -148,18 +135,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
 
     case 'keepAlive':
-      // Respond to keep the offscreen document alive
-      // Also check IDB asynchronously if no blob in memory
-      if (recordedBlob) {
-        sendResponse({ alive: true, hasRecording: !!mediaRecorder, hasBlob: true });
-        return false;
-      }
-      // Check IDB for blob
-      loadBlobFromIDB().then(blob => {
-        if (blob) recordedBlob = blob;
-        sendResponse({ alive: true, hasRecording: !!mediaRecorder, hasBlob: !!blob });
-      });
-      return true;
+      // Just respond to keep the offscreen document alive
+      sendResponse({ alive: true, hasRecording: !!mediaRecorder, hasBlob: !!recordedBlob });
+      return false;
   }
 });
 
@@ -398,24 +376,11 @@ function startMediaRecorder(stream) {
   mediaRecorder.onstop = async () => {
     recordedBlob = new Blob(chunks, { type: mimeType });
     const blobSize = recordedBlob.size;
-    console.log('[Screencast] Recording stopped, blob size:', blobSize);
 
     // Persist to IndexedDB so blob survives if offscreen is closed
-    try {
-      await saveBlobToIDB(recordedBlob);
-      // Verify the save worked
-      const verifyBlob = await loadBlobFromIDB();
-      if (!verifyBlob) {
-        console.error('[Screencast] IDB save verification failed — blob not found after save');
-      } else {
-        console.log('[Screencast] IDB save verified, stored size:', verifyBlob.size);
-      }
-    } catch (e) {
-      console.error('[Screencast] IDB save failed:', e);
-    }
+    try { await saveBlobToIDB(recordedBlob); } catch {}
 
     cleanup();
-    // Do NOT stop keepAlive here — offscreen must stay alive for upload/download
     chrome.runtime.sendMessage({
       action: 'recordingStopped',
       blobSize,
@@ -446,53 +411,30 @@ function handleStop() {
 async function handleDownload(title) {
   let blob = recordedBlob;
   if (!blob) {
-    // Retry IDB load
-    for (let i = 0; i < 3; i++) {
-      blob = await loadBlobFromIDB();
-      if (blob) { recordedBlob = blob; break; }
-      await new Promise(r => setTimeout(r, 300));
-    }
+    blob = await loadBlobFromIDB();
+    if (blob) recordedBlob = blob;
   }
-  if (!blob) {
-    console.error('[Screencast] Download failed: no blob in memory or IDB');
-    return { success: false, error: 'No recording found' };
-  }
+  if (!blob) return;
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
   a.download = `${title || 'recording'}.webm`;
   a.click();
   URL.revokeObjectURL(url);
-  return { success: true };
 }
 
 // === Upload to Supabase ===
 async function handleUpload({ title, duration, mode }) {
   // Try loading from IndexedDB if blob was lost (offscreen restarted)
   if (!recordedBlob) {
-    // Retry IDB load several times — blob save might still be in progress
-    for (let i = 0; i < 5; i++) {
-      recordedBlob = await loadBlobFromIDB();
-      if (recordedBlob) {
-        console.log('[Screencast] Loaded blob from IDB on attempt', i + 1, 'size:', recordedBlob.size);
-        break;
-      }
-      console.log('[Screencast] IDB load attempt', i + 1, 'returned null, retrying...');
-      await new Promise(r => setTimeout(r, 500));
-    }
+    recordedBlob = await loadBlobFromIDB();
   }
-  if (!recordedBlob) {
-    console.error('[Screencast] No recording blob found in memory or IDB after 5 attempts');
-    return { success: false, error: 'No recording found. The recording may have been lost.' };
-  }
-
-  // Refresh auth token if needed (fixes expired token issue)
-  await refreshAuthIfNeeded();
+  if (!recordedBlob) return { success: false, error: 'No recording' };
 
   // Get auth from web app
   const auth = await getWebAppAuth();
   if (!auth) {
-    return { success: false, error: 'Not logged in. Please sign in and retry.' };
+    return { success: false, error: 'Not logged in. Please sign in at screencast-eight.vercel.app first.' };
   }
 
   const headers = {
@@ -518,11 +460,7 @@ async function handleUpload({ title, duration, mode }) {
       }),
     });
 
-    if (!insertRes.ok) {
-      const errBody = await insertRes.text().catch(() => '');
-      if (insertRes.status === 401) throw new Error('Auth expired. Please sign in again.');
-      throw new Error(`Failed to create recording (${insertRes.status}): ${errBody}`);
-    }
+    if (!insertRes.ok) throw new Error('Failed to create recording');
     const [recording] = await insertRes.json();
     sendProgress(20);
 
@@ -538,10 +476,7 @@ async function handleUpload({ title, duration, mode }) {
       body: recordedBlob,
     });
 
-    if (!uploadRes.ok) {
-      if (uploadRes.status === 401) throw new Error('Auth expired. Please sign in again.');
-      throw new Error(`Failed to upload video (${uploadRes.status})`);
-    }
+    if (!uploadRes.ok) throw new Error('Failed to upload video');
     sendProgress(70);
 
     // 3. Generate + upload thumbnail
@@ -578,55 +513,20 @@ async function handleUpload({ title, duration, mode }) {
     stopKeepAlive(); // Upload done, safe to let Chrome close offscreen
     recordedBlob = null;
     chunks = [];
-    // Clean up IndexedDB blob after successful upload
-    await clearBlobFromIDB().catch(() => {});
     return { success: true, recordingId: recording.id };
   } catch (err) {
-    // Don't clear blob on failure - user can retry
     return { success: false, error: err.message };
   }
 }
 
 // === Auth: Read from web app ===
 async function getWebAppAuth() {
+  // Check stored auth first
   const stored = await chrome.storage.local.get(['authToken', 'userId']);
   if (stored.authToken && stored.userId) {
     return { accessToken: stored.authToken, userId: stored.userId };
   }
   return null;
-}
-
-// === Auth: Refresh token via service worker before upload ===
-async function refreshAuthIfNeeded() {
-  const stored = await chrome.storage.local.get(['authToken', 'refreshToken']);
-  if (!stored.refreshToken) return;
-
-  // Try to decode JWT and check expiry
-  try {
-    const payload = JSON.parse(atob(stored.authToken.split('.')[1]));
-    const expiresAt = payload.exp * 1000;
-    // Refresh if token expires within 5 minutes
-    if (Date.now() < expiresAt - 5 * 60 * 1000) return;
-  } catch {
-    // Can't decode - try refresh anyway
-  }
-
-  try {
-    const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_ANON_KEY },
-      body: JSON.stringify({ refresh_token: stored.refreshToken }),
-    });
-    if (res.ok) {
-      const data = await res.json();
-      await chrome.storage.local.set({
-        authToken: data.access_token,
-        refreshToken: data.refresh_token,
-        userId: data.user.id,
-        userEmail: data.user.email,
-      });
-    }
-  } catch {}
 }
 
 // === Thumbnail Generation ===
