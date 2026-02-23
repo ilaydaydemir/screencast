@@ -254,7 +254,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   switch (message.action) {
     case 'startRecording':
-      handleStart(message).then(r => { console.log('[Recorder] startRecording result:', r); sendResponse(r); }).catch(e => { console.error('[Recorder] startRecording error:', e); sendResponse({ success: false, error: e.message }); });
+      handleStart(message).then(r => { console.log('[Recorder] startRecording result:', r); sendResponse(r); }).catch(e => { console.error('[Recorder] startRecording error:', e); sendResponse({ success: false, error: String(e?.message || e) }); });
       return true;
 
     case 'stopRecording':

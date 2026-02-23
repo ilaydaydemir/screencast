@@ -532,7 +532,7 @@ async function startTabRecording(tab, cameraId, micId, recordingId, auth) {
     consumerTabId: recorderTabId,
   });
 
-  await forwardToRecorderTab({
+  const result = await forwardToRecorderTab({
     action: 'startRecording',
     mode: 'tab',
     tabCaptureStreamId: streamId,
@@ -542,6 +542,13 @@ async function startTabRecording(tab, cameraId, micId, recordingId, auth) {
     userId: auth.userId,
     authToken: auth.authToken,
   });
+
+  if (!result || !result.success) {
+    console.error('[SW] Recorder failed to start tab capture:', result?.error);
+    await removeBubble(tab.id);
+    bubbleTabId = null;
+    return { success: false, error: result?.error || 'Recorder failed to start' };
+  }
 
   startTimer();
   recordingState = 'recording';
@@ -555,7 +562,9 @@ async function startDesktopRecording(mode, tab, cameraId, micId, recordingId, au
 
   return new Promise((resolve) => {
     const sources = mode === 'full-screen' ? ['screen'] : ['window'];
-    chrome.desktopCapture.chooseDesktopMedia(sources, tab, async (streamId) => {
+    // Don't pass tab — that binds the stream to the active tab.
+    // Without tab, the stream is usable by any extension page (our recorder tab).
+    chrome.desktopCapture.chooseDesktopMedia(sources, async (streamId) => {
       if (!streamId) {
         await removeBubble(tab.id);
         bubbleTabId = null;
@@ -563,7 +572,7 @@ async function startDesktopRecording(mode, tab, cameraId, micId, recordingId, au
         return;
       }
 
-      await forwardToRecorderTab({
+      const result = await forwardToRecorderTab({
         action: 'startRecording',
         mode: mode,
         desktopStreamId: streamId,
@@ -574,6 +583,14 @@ async function startDesktopRecording(mode, tab, cameraId, micId, recordingId, au
         authToken: auth.authToken,
       });
 
+      if (!result || !result.success) {
+        console.error('[SW] Recorder failed to start desktop capture:', result?.error);
+        await removeBubble(tab.id);
+        bubbleTabId = null;
+        resolve({ success: false, error: result?.error || 'Recorder failed to start' });
+        return;
+      }
+
       startTimer();
       recordingState = 'recording';
       resolve({ success: true });
@@ -583,7 +600,7 @@ async function startDesktopRecording(mode, tab, cameraId, micId, recordingId, au
 
 // === Camera Only ===
 async function startCameraOnlyRecording(cameraId, micId, recordingId, auth) {
-  await forwardToRecorderTab({
+  const result = await forwardToRecorderTab({
     action: 'startRecording',
     mode: 'camera-only',
     cameraId,
@@ -592,6 +609,11 @@ async function startCameraOnlyRecording(cameraId, micId, recordingId, auth) {
     userId: auth.userId,
     authToken: auth.authToken,
   });
+
+  if (!result || !result.success) {
+    console.error('[SW] Recorder failed to start camera-only:', result?.error);
+    return { success: false, error: result?.error || 'Recorder failed to start' };
+  }
 
   startTimer();
   recordingState = 'recording';
