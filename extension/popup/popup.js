@@ -1,5 +1,7 @@
 // === Constants ===
 const MAX_DURATION = 3600;
+const SUPABASE_URL = 'https://bgsvuywxejpmkstgqizq.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJnc3Z1eXd4ZWpwbWtzdGdxaXpxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE2MDc0MzMsImV4cCI6MjA4NzE4MzQzM30.EvHOy5sBbXzSxjRS5vPGzm8cnFrOXxDfclP-ru3VU_M';
 
 // === State ===
 let currentMode = 'tab';
@@ -11,6 +13,7 @@ let timerInterval = null;
 let elapsedSeconds = 0;
 
 // === DOM Refs ===
+const authView = document.getElementById('auth-view');
 const setupView = document.getElementById('setup-view');
 const recordingView = document.getElementById('recording-view');
 const doneView = document.getElementById('done-view');
@@ -30,6 +33,14 @@ const titleInput = document.getElementById('title-input');
 const recordingInfo = document.getElementById('recording-info');
 const uploadProgress = document.getElementById('upload-progress');
 const uploadBar = document.getElementById('upload-bar');
+const authEmail = document.getElementById('auth-email');
+const authPassword = document.getElementById('auth-password');
+const signinBtn = document.getElementById('signin-btn');
+const signupBtn = document.getElementById('signup-btn');
+const authError = document.getElementById('auth-error');
+const userInfo = document.getElementById('user-info');
+const userEmailEl = document.getElementById('user-email');
+const signoutBtn = document.getElementById('signout-btn');
 
 // === Init ===
 document.addEventListener('DOMContentLoaded', async () => {
@@ -40,9 +51,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   downloadBtn.addEventListener('click', downloadRecording);
   uploadBtn.addEventListener('click', uploadRecording);
   discardBtn.addEventListener('click', discardRecording);
-
-  // Sync auth from web app if not stored yet
-  await syncAuthFromWebApp();
+  signinBtn.addEventListener('click', handleSignIn);
+  signupBtn.addEventListener('click', handleSignUp);
+  signoutBtn.addEventListener('click', handleSignOut);
 
   // Check if already recording
   const state = await sendMessage({ action: 'getState' });
@@ -63,9 +74,30 @@ document.addEventListener('DOMContentLoaded', async () => {
     return;
   }
 
-  await enumerateDevices();
+  // Check auth status
+  const auth = await chrome.storage.local.get(['authToken', 'userId', 'userEmail']);
+  if (auth.authToken && auth.userId) {
+    // Logged in - show setup view
+    showView('setup');
+    showUserInfo(auth.userEmail || 'Signed in');
+    await enumerateDevices();
+    setupModeAndDeviceListeners();
+  } else {
+    // Not logged in - try sync from web app first
+    const synced = await syncAuthFromWebApp();
+    if (synced) {
+      const auth2 = await chrome.storage.local.get(['userEmail']);
+      showView('setup');
+      showUserInfo(auth2.userEmail || 'Signed in');
+      await enumerateDevices();
+      setupModeAndDeviceListeners();
+    } else {
+      showView('auth');
+    }
+  }
+});
 
-  // Mode picker
+function setupModeAndDeviceListeners() {
   document.querySelectorAll('.mode-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
@@ -74,14 +106,129 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   });
 
-  // Device selectors
   cameraSelect.addEventListener('change', () => {
     startCameraPreview(cameraSelect.value);
   });
   micSelect.addEventListener('change', () => {
     startAudioLevel(micSelect.value);
   });
-});
+}
+
+function showUserInfo(email) {
+  userEmailEl.textContent = email;
+  userInfo.style.display = 'flex';
+}
+
+// === Auth: Sign In ===
+async function handleSignIn() {
+  const email = authEmail.value.trim();
+  const password = authPassword.value;
+  if (!email || !password) {
+    showAuthError('Please enter email and password');
+    return;
+  }
+
+  signinBtn.disabled = true;
+  signinBtn.textContent = 'Signing in...';
+  authError.style.display = 'none';
+
+  try {
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_ANON_KEY,
+      },
+      body: JSON.stringify({ email, password }),
+    });
+
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error_description || data.msg || 'Sign in failed');
+    }
+
+    await chrome.storage.local.set({
+      authToken: data.access_token,
+      refreshToken: data.refresh_token,
+      userId: data.user.id,
+      userEmail: data.user.email,
+    });
+
+    showView('setup');
+    showUserInfo(data.user.email);
+    await enumerateDevices();
+    setupModeAndDeviceListeners();
+  } catch (err) {
+    showAuthError(err.message);
+    signinBtn.disabled = false;
+    signinBtn.textContent = 'Sign In';
+  }
+}
+
+// === Auth: Sign Up ===
+async function handleSignUp() {
+  const email = authEmail.value.trim();
+  const password = authPassword.value;
+  if (!email || !password) {
+    showAuthError('Please enter email and password');
+    return;
+  }
+  if (password.length < 6) {
+    showAuthError('Password must be at least 6 characters');
+    return;
+  }
+
+  signupBtn.disabled = true;
+  authError.style.display = 'none';
+
+  try {
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/signup`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_ANON_KEY,
+      },
+      body: JSON.stringify({ email, password }),
+    });
+
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error_description || data.msg || 'Sign up failed');
+    }
+
+    // Auto sign in after signup
+    if (data.access_token) {
+      await chrome.storage.local.set({
+        authToken: data.access_token,
+        refreshToken: data.refresh_token,
+        userId: data.user.id,
+        userEmail: data.user.email,
+      });
+      showView('setup');
+      showUserInfo(data.user.email);
+      await enumerateDevices();
+      setupModeAndDeviceListeners();
+    } else {
+      showAuthError('Check your email to confirm your account, then sign in.');
+      signupBtn.disabled = false;
+    }
+  } catch (err) {
+    showAuthError(err.message);
+    signupBtn.disabled = false;
+  }
+}
+
+// === Auth: Sign Out ===
+async function handleSignOut() {
+  await chrome.storage.local.remove(['authToken', 'refreshToken', 'userId', 'userEmail']);
+  userInfo.style.display = 'none';
+  showView('auth');
+}
+
+function showAuthError(msg) {
+  authError.textContent = msg;
+  authError.style.display = 'block';
+}
 
 // === Device Enumeration (via offscreen document) ===
 async function enumerateDevices() {
@@ -89,7 +236,6 @@ async function enumerateDevices() {
     const result = await sendMessage({ action: 'enumerateDevices' });
 
     if (!result || !result.success || (result.cameras.length === 0 && result.mics.length === 0)) {
-      // No permission or no devices - show permission prompt
       showPermissionPrompt();
       return;
     }
@@ -97,7 +243,6 @@ async function enumerateDevices() {
     const { cameras, mics } = result;
     hidePermissionPrompt();
 
-    // Populate camera select
     cameraSelect.innerHTML = '<option value="">No Camera</option>';
     cameras.forEach(cam => {
       const opt = document.createElement('option');
@@ -106,7 +251,6 @@ async function enumerateDevices() {
       cameraSelect.appendChild(opt);
     });
 
-    // Populate mic select
     micSelect.innerHTML = '<option value="">No Microphone</option>';
     mics.forEach(mic => {
       const opt = document.createElement('option');
@@ -115,7 +259,6 @@ async function enumerateDevices() {
       micSelect.appendChild(opt);
     });
 
-    // Auto-select first devices
     if (cameras.length > 0) {
       cameraSelect.value = cameras[0].deviceId;
       startCameraPreview(cameras[0].deviceId);
@@ -143,7 +286,6 @@ function showPermissionPrompt() {
       ">Grant Camera & Mic Access</button>
     `;
     banner.style.cssText = 'padding:12px 16px;background:#1a1a1a;border-radius:10px;margin:0 0 12px;text-align:center;';
-    const setupView = document.getElementById('setup-view');
     const firstSection = setupView.querySelector('.section');
     setupView.insertBefore(banner, firstSection);
 
@@ -222,7 +364,6 @@ async function startRecording() {
   startBtn.disabled = true;
   startBtn.textContent = 'Starting...';
 
-  // Stop preview streams
   if (previewStream) {
     previewStream.getTracks().forEach(t => t.stop());
     previewStream = null;
@@ -294,6 +435,13 @@ async function downloadRecording() {
 
 // === Upload ===
 async function uploadRecording() {
+  // Check auth before upload
+  const auth = await chrome.storage.local.get(['authToken', 'userId']);
+  if (!auth.authToken || !auth.userId) {
+    alert('Please sign in first to save recordings.');
+    return;
+  }
+
   uploadBtn.disabled = true;
   uploadBtn.textContent = 'Uploading...';
   uploadProgress.style.display = 'block';
@@ -342,6 +490,7 @@ chrome.runtime.onMessage.addListener((message) => {
 
 // === Helpers ===
 function showView(view) {
+  authView.style.display = view === 'auth' ? 'block' : 'none';
   setupView.style.display = view === 'setup' ? 'block' : 'none';
   recordingView.style.display = view === 'recording' ? 'block' : 'none';
   doneView.style.display = view === 'done' ? 'block' : 'none';
@@ -371,11 +520,10 @@ async function sendMessage(msg) {
 async function syncAuthFromWebApp() {
   try {
     const stored = await chrome.storage.local.get(['authToken', 'userId']);
-    if (stored.authToken && stored.userId) return; // Already have auth
+    if (stored.authToken && stored.userId) return true;
 
-    // Find an open tab with the web app
     const tabs = await chrome.tabs.query({ url: 'https://screencast-eight.vercel.app/*' });
-    if (tabs.length === 0) return;
+    if (tabs.length === 0) return false;
 
     const results = await chrome.scripting.executeScript({
       target: { tabId: tabs[0].id },
@@ -385,7 +533,7 @@ async function syncAuthFromWebApp() {
         if (!authKey) return null;
         try {
           const data = JSON.parse(localStorage.getItem(authKey));
-          return { accessToken: data.access_token, userId: data.user?.id };
+          return { accessToken: data.access_token, userId: data.user?.id, email: data.user?.email };
         } catch { return null; }
       },
     });
@@ -395,9 +543,12 @@ async function syncAuthFromWebApp() {
       await chrome.storage.local.set({
         authToken: auth.accessToken,
         userId: auth.userId,
+        userEmail: auth.email || '',
       });
+      return true;
     }
+    return false;
   } catch {
-    // Web app tab not available or permissions issue
+    return false;
   }
 }

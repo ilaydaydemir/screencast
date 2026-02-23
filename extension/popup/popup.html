@@ -6,12 +6,35 @@
 </head>
 <body>
   <div id="app">
+    <!-- Auth View -->
+    <div id="auth-view" style="display:none;">
+      <div class="header">
+        <div class="logo">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+          <span>Screencast</span>
+        </div>
+      </div>
+      <div class="auth-container">
+        <h2 class="auth-title">Sign in to save recordings</h2>
+        <p class="auth-subtitle">Use your Screencast account</p>
+        <div id="auth-error" class="auth-error" style="display:none;"></div>
+        <input id="auth-email" type="email" placeholder="Email" class="auth-input">
+        <input id="auth-password" type="password" placeholder="Password" class="auth-input">
+        <button id="signin-btn" class="primary-btn">Sign In</button>
+        <button id="signup-btn" class="text-btn">Don't have an account? Sign Up</button>
+      </div>
+    </div>
+
     <!-- Setup View -->
     <div id="setup-view">
       <div class="header">
         <div class="logo">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
           <span>Screencast</span>
+        </div>
+        <div id="user-info" style="display:none;">
+          <span id="user-email" class="user-email"></span>
+          <button id="signout-btn" class="signout-btn">Sign Out</button>
         </div>
       </div>
 
