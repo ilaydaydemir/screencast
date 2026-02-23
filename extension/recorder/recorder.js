@@ -407,14 +407,28 @@ async function startTabMode(streamId, micId) {
 
 // === Desktop/Window Mode (Direct stream — no canvas compositing) ===
 // Canvas compositing freezes in background tabs (requestAnimationFrame stops).
-// Instead, record the getDisplayMedia stream directly. The webcam bubble is
-// injected as a content script on the active tab and captured as part of the screen.
+// Record the getDisplayMedia stream directly. The webcam bubble is injected
+// as a content script on the active tab and captured as part of the screen.
+// getDisplayMedia requires a user gesture — show a click overlay.
 async function startDesktopMode(mode, cameraId, micId) {
   console.log('[Recorder] startDesktopMode:', mode);
+  const overlay = document.getElementById('start-overlay');
+  overlay.style.display = 'flex';
+
   const displaySurface = mode === 'window' ? 'window' : 'monitor';
-  screenStream = await navigator.mediaDevices.getDisplayMedia({
-    video: { displaySurface },
-    audio: true,
+  screenStream = await new Promise((resolve, reject) => {
+    overlay.addEventListener('click', async () => {
+      overlay.style.display = 'none';
+      try {
+        const stream = await navigator.mediaDevices.getDisplayMedia({
+          video: { displaySurface },
+          audio: true,
+        });
+        resolve(stream);
+      } catch (err) {
+        reject(err);
+      }
+    }, { once: true });
   });
   console.log('[Recorder] getDisplayMedia succeeded, tracks:', screenStream.getTracks().map(t => t.kind + ':' + t.label));
 
