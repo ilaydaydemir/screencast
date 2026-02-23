@@ -70,11 +70,25 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (state && state.state === 'stopped') {
     elapsedSeconds = state.elapsed || 0;
     showView('done');
-    // Auto-upload is in progress
     recordingInfo.textContent = 'Saving to Screencast...';
     titleInput.style.display = 'none';
     downloadBtn.parentElement.style.display = 'none';
     discardBtn.style.display = 'none';
+    return;
+  }
+  if (state && state.state === 'uploading') {
+    elapsedSeconds = state.elapsed || 0;
+    showView('done');
+    recordingInfo.textContent = 'Saving to Screencast...';
+    titleInput.style.display = 'none';
+    downloadBtn.parentElement.style.display = 'none';
+    discardBtn.style.display = 'none';
+    return;
+  }
+  if (state && state.state === 'upload_failed') {
+    elapsedSeconds = state.elapsed || 0;
+    showView('done');
+    showUploadFailed(state.uploadError || 'Upload failed');
     return;
   }
 
@@ -473,6 +487,8 @@ async function uploadRecording() {
 // === Discard ===
 async function discardRecording() {
   await sendMessage({ action: 'discardRecording' });
+  const retryBtn = document.getElementById('retry-btn');
+  if (retryBtn) retryBtn.remove();
   showView('setup');
   startBtn.disabled = false;
   startBtn.textContent = 'Start Recording';
@@ -495,6 +511,8 @@ chrome.runtime.onMessage.addListener((message) => {
     titleInput.style.display = 'none';
     downloadBtn.parentElement.style.display = 'none';
     discardBtn.style.display = 'none';
+    const rb = document.getElementById('retry-btn');
+    if (rb) rb.style.display = 'none';
   }
   if (message.action === 'autoUploadComplete') {
     recordingInfo.textContent = 'Saved! Opening dashboard...';
@@ -504,11 +522,7 @@ chrome.runtime.onMessage.addListener((message) => {
     }, 1000);
   }
   if (message.action === 'autoUploadFailed') {
-    // Show manual controls so user can download or retry
-    recordingInfo.textContent = `${formatTime(elapsedSeconds)} recorded`;
-    titleInput.style.display = '';
-    downloadBtn.parentElement.style.display = '';
-    discardBtn.style.display = '';
+    showUploadFailed(message.error || 'Upload failed');
   }
   if (message.action === 'recordingCancelled') {
     clearInterval(timerInterval);
@@ -518,6 +532,51 @@ chrome.runtime.onMessage.addListener((message) => {
     enumerateDevices();
   }
 });
+
+// === Upload Failed: Show retry/download/discard ===
+function showUploadFailed(error) {
+  recordingInfo.innerHTML = `
+    <div style="color:#f87171;font-size:13px;margin-bottom:8px;">Upload failed: ${error}</div>
+    <div style="color:#999;font-size:12px;">${formatTime(elapsedSeconds)} recorded</div>
+  `;
+  titleInput.style.display = '';
+  downloadBtn.parentElement.style.display = ''; // .done-actions div
+  discardBtn.style.display = '';
+
+  // Add retry button if not already present
+  let retryBtn = document.getElementById('retry-btn');
+  if (!retryBtn) {
+    retryBtn = document.createElement('button');
+    retryBtn.id = 'retry-btn';
+    retryBtn.textContent = 'Retry Upload';
+    retryBtn.className = 'primary-btn';
+    retryBtn.style.cssText = 'width:100%;margin-bottom:8px;';
+    retryBtn.addEventListener('click', retryUpload);
+    // Insert before the .done-actions div
+    const doneActions = downloadBtn.parentElement;
+    doneActions.parentElement.insertBefore(retryBtn, doneActions);
+  }
+  retryBtn.style.display = '';
+  retryBtn.disabled = false;
+  retryBtn.textContent = 'Retry Upload';
+}
+
+async function retryUpload() {
+  const retryBtn = document.getElementById('retry-btn');
+  if (retryBtn) {
+    retryBtn.disabled = true;
+    retryBtn.textContent = 'Retrying...';
+  }
+  recordingInfo.textContent = 'Saving to Screencast...';
+  titleInput.style.display = 'none';
+  downloadBtn.parentElement.style.display = 'none';
+  discardBtn.style.display = 'none';
+  if (retryBtn) retryBtn.style.display = 'none';
+
+  const result = await sendMessage({ action: 'retryUpload' });
+  // If it fails, autoUploadFailed message will trigger showUploadFailed
+  // If it succeeds, autoUploadComplete message will open dashboard
+}
 
 // === Helpers ===
 function showView(view) {

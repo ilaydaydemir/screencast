@@ -2,21 +2,26 @@
 // Orchestrates recording: tab capture, desktop capture, messaging, toolbar
 
 // === State ===
-let recordingState = 'idle'; // idle | recording | paused | stopped
+let recordingState = 'idle'; // idle | recording | paused | stopped | uploading | upload_failed
 let currentMode = null;
 let activeTabId = null;
 let bubbleTabId = null;
 let currentCameraId = null;
 let elapsedSeconds = 0;
 let timerInterval = null;
+let uploadError = null;
 // === Message Router ===
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.target === 'offscreen') return false;
 
   switch (message.action) {
     case 'getState':
-      sendResponse({ state: recordingState, mode: currentMode, elapsed: elapsedSeconds });
+      sendResponse({ state: recordingState, mode: currentMode, elapsed: elapsedSeconds, uploadError });
       return false;
+
+    case 'retryUpload':
+      handleRetryUpload().then(sendResponse);
+      return true;
 
     case 'startRecording':
       handleStartRecording(message).then(sendResponse);
@@ -54,6 +59,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'discardRecording':
       forwardToOffscreen({ action: 'discardRecording' }).then(() => {
         recordingState = 'idle';
+        uploadError = null;
         sendResponse({ success: true });
       });
       return true;
@@ -81,6 +87,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 // === Tab Following: Re-inject bubble when user switches tabs ===
+let tabSwitchInProgress = false;
 chrome.tabs.onActivated.addListener(async (activeInfo) => {
   if (recordingState !== 'recording' && recordingState !== 'paused') return;
   if (currentMode === 'camera-only') return;
@@ -88,24 +95,37 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
 
   const newTabId = activeInfo.tabId;
   if (newTabId === bubbleTabId) return;
+  if (tabSwitchInProgress) return; // Prevent rapid-fire tab switches from overlapping
 
-  // Remove from old tab (this stops the old webcam stream)
-  if (bubbleTabId) {
-    await removeBubble(bubbleTabId);
-    bubbleTabId = null;
-    // Wait for camera to fully release before re-acquiring on new tab
-    await new Promise(r => setTimeout(r, 500));
-  }
+  tabSwitchInProgress = true;
 
-  // Check if we can inject into this tab
+  // Check if we can inject into the new tab BEFORE removing from old tab
+  let canInject = false;
   try {
     const tab = await chrome.tabs.get(newTabId);
-    if (tab.url && !tab.url.startsWith('chrome://') && !tab.url.startsWith('chrome-extension://') && !tab.url.startsWith('about:')) {
+    canInject = tab.url && !tab.url.startsWith('chrome://') && !tab.url.startsWith('chrome-extension://') && !tab.url.startsWith('about:') && !tab.url.startsWith('edge://');
+  } catch {}
+
+  // Remove from old tab
+  const oldBubbleTabId = bubbleTabId;
+  if (oldBubbleTabId) {
+    await removeBubble(oldBubbleTabId);
+    bubbleTabId = null;
+  }
+
+  if (canInject) {
+    // Wait for camera to fully release before re-acquiring on new tab
+    // camera.js now has retry logic, so even if this isn't long enough it will self-heal
+    await new Promise(r => setTimeout(r, 300));
+
+    try {
       const isPaused = recordingState === 'paused';
       await injectBubbleAndToolbar(newTabId, currentCameraId, elapsedSeconds, isPaused);
       bubbleTabId = newTabId;
-    }
-  } catch {}
+    } catch {}
+  }
+
+  tabSwitchInProgress = false;
 });
 
 // === Re-inject on page navigation ===
@@ -419,15 +439,20 @@ async function removeBubble(tabId) {
       func: () => {
         const host = document.getElementById('screencast-bubble-host');
         if (host) {
-          // Stop camera iframe by blanking its src
           const shadow = host.shadowRoot;
           if (shadow) {
             const iframe = shadow.querySelector('iframe');
-            if (iframe) iframe.src = 'about:blank';
+            if (iframe) {
+              // Send stop signal via postMessage (works cross-origin)
+              // camera.js listens for this and releases the camera stream immediately
+              try { iframe.contentWindow.postMessage('stop-camera', '*'); } catch {}
+            }
           }
-          // Stop direct stream if any
-          if (host._stream) host._stream.getTracks().forEach(t => t.stop());
-          host.remove();
+          // Small delay to let camera.js process the stop message before removing iframe
+          setTimeout(() => {
+            if (host._stream) host._stream.getTracks().forEach(t => t.stop());
+            host.remove();
+          }, 100);
         }
         if (window._screencastListener) {
           chrome.runtime.onMessage.removeListener(window._screencastListener);
@@ -435,6 +460,8 @@ async function removeBubble(tabId) {
         }
       },
     });
+    // Wait for the setTimeout inside to execute
+    await new Promise(r => setTimeout(r, 150));
   } catch {}
 }
 
@@ -526,28 +553,84 @@ async function handleStopRecording() {
 
 // === Auto Upload (triggered automatically on stop) ===
 async function autoUpload(duration, mode) {
+  recordingState = 'uploading';
+  uploadError = null;
+
+  // Try refreshing the token first
+  await refreshAuthToken();
+
   const auth = await chrome.storage.local.get(['authToken', 'userId']);
   if (!auth.authToken || !auth.userId) {
-    chrome.runtime.sendMessage({ action: 'autoUploadFailed', error: 'Not signed in' }).catch(() => {});
+    recordingState = 'upload_failed';
+    uploadError = 'Not signed in. Please sign in and retry.';
+    chrome.runtime.sendMessage({ action: 'autoUploadFailed', error: uploadError }).catch(() => {});
     return;
   }
 
   const now = new Date();
   const title = 'Recording - ' + now.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) + ' ' + now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
 
-  await ensureOffscreenDocument();
-  const result = await forwardToOffscreen({
-    action: 'uploadToWebApp',
-    title,
-    duration: duration || 0,
-    mode: mode || 'tab',
-  });
+  try {
+    await ensureOffscreenDocument();
+    const result = await forwardToOffscreen({
+      action: 'uploadToWebApp',
+      title,
+      duration: duration || 0,
+      mode: mode || 'tab',
+    });
 
-  if (result && result.success) {
-    recordingState = 'idle';
-    chrome.runtime.sendMessage({ action: 'autoUploadComplete', recordingId: result.recordingId }).catch(() => {});
-  } else {
-    chrome.runtime.sendMessage({ action: 'autoUploadFailed', error: result?.error || 'Upload failed' }).catch(() => {});
+    if (result && result.success) {
+      recordingState = 'idle';
+      uploadError = null;
+      chrome.runtime.sendMessage({ action: 'autoUploadComplete', recordingId: result.recordingId }).catch(() => {});
+    } else {
+      recordingState = 'upload_failed';
+      uploadError = result?.error || 'Upload failed';
+      chrome.runtime.sendMessage({ action: 'autoUploadFailed', error: uploadError }).catch(() => {});
+    }
+  } catch (err) {
+    recordingState = 'upload_failed';
+    uploadError = err.message || 'Upload failed unexpectedly';
+    chrome.runtime.sendMessage({ action: 'autoUploadFailed', error: uploadError }).catch(() => {});
+  }
+}
+
+// === Retry Upload ===
+async function handleRetryUpload() {
+  const savedMode = currentMode;
+  await autoUpload(elapsedSeconds, savedMode);
+  return { success: recordingState === 'idle' };
+}
+
+// === Token Refresh ===
+async function refreshAuthToken() {
+  try {
+    const stored = await chrome.storage.local.get(['refreshToken']);
+    if (!stored.refreshToken) return;
+
+    const SUPABASE_URL = 'https://bgsvuywxejpmkstgqizq.supabase.co';
+    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJnc3Z1eXd4ZWpwbWtzdGdxaXpxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE2MDc0MzMsImV4cCI6MjA4NzE4MzQzM30.EvHOy5sBbXzSxjRS5vPGzm8cnFrOXxDfclP-ru3VU_M';
+
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_ANON_KEY,
+      },
+      body: JSON.stringify({ refresh_token: stored.refreshToken }),
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      await chrome.storage.local.set({
+        authToken: data.access_token,
+        refreshToken: data.refresh_token,
+        userId: data.user.id,
+        userEmail: data.user.email,
+      });
+    }
+  } catch {
+    // Token refresh failed - will fall back to stored token
   }
 }
 

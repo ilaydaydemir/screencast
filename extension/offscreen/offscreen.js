@@ -429,12 +429,15 @@ async function handleUpload({ title, duration, mode }) {
   if (!recordedBlob) {
     recordedBlob = await loadBlobFromIDB();
   }
-  if (!recordedBlob) return { success: false, error: 'No recording' };
+  if (!recordedBlob) return { success: false, error: 'No recording found. The recording may have been lost.' };
+
+  // Refresh auth token if needed (fixes expired token issue)
+  await refreshAuthIfNeeded();
 
   // Get auth from web app
   const auth = await getWebAppAuth();
   if (!auth) {
-    return { success: false, error: 'Not logged in. Please sign in at screencast-eight.vercel.app first.' };
+    return { success: false, error: 'Not logged in. Please sign in and retry.' };
   }
 
   const headers = {
@@ -460,7 +463,11 @@ async function handleUpload({ title, duration, mode }) {
       }),
     });
 
-    if (!insertRes.ok) throw new Error('Failed to create recording');
+    if (!insertRes.ok) {
+      const errBody = await insertRes.text().catch(() => '');
+      if (insertRes.status === 401) throw new Error('Auth expired. Please sign in again.');
+      throw new Error(`Failed to create recording (${insertRes.status}): ${errBody}`);
+    }
     const [recording] = await insertRes.json();
     sendProgress(20);
 
@@ -476,7 +483,10 @@ async function handleUpload({ title, duration, mode }) {
       body: recordedBlob,
     });
 
-    if (!uploadRes.ok) throw new Error('Failed to upload video');
+    if (!uploadRes.ok) {
+      if (uploadRes.status === 401) throw new Error('Auth expired. Please sign in again.');
+      throw new Error(`Failed to upload video (${uploadRes.status})`);
+    }
     sendProgress(70);
 
     // 3. Generate + upload thumbnail
@@ -513,20 +523,55 @@ async function handleUpload({ title, duration, mode }) {
     stopKeepAlive(); // Upload done, safe to let Chrome close offscreen
     recordedBlob = null;
     chunks = [];
+    // Clean up IndexedDB blob after successful upload
+    await clearBlobFromIDB().catch(() => {});
     return { success: true, recordingId: recording.id };
   } catch (err) {
+    // Don't clear blob on failure - user can retry
     return { success: false, error: err.message };
   }
 }
 
 // === Auth: Read from web app ===
 async function getWebAppAuth() {
-  // Check stored auth first
   const stored = await chrome.storage.local.get(['authToken', 'userId']);
   if (stored.authToken && stored.userId) {
     return { accessToken: stored.authToken, userId: stored.userId };
   }
   return null;
+}
+
+// === Auth: Refresh token via service worker before upload ===
+async function refreshAuthIfNeeded() {
+  const stored = await chrome.storage.local.get(['authToken', 'refreshToken']);
+  if (!stored.refreshToken) return;
+
+  // Try to decode JWT and check expiry
+  try {
+    const payload = JSON.parse(atob(stored.authToken.split('.')[1]));
+    const expiresAt = payload.exp * 1000;
+    // Refresh if token expires within 5 minutes
+    if (Date.now() < expiresAt - 5 * 60 * 1000) return;
+  } catch {
+    // Can't decode - try refresh anyway
+  }
+
+  try {
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_ANON_KEY },
+      body: JSON.stringify({ refresh_token: stored.refreshToken }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      await chrome.storage.local.set({
+        authToken: data.access_token,
+        refreshToken: data.refresh_token,
+        userId: data.user.id,
+        userEmail: data.user.email,
+      });
+    }
+  } catch {}
 }
 
 // === Thumbnail Generation ===
