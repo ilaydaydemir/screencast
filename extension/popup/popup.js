@@ -578,19 +578,40 @@ function generateTitle() {
 }
 
 // Direct IDB access — works even if offscreen document is closed
-function loadBlobFromIDB() {
+function idbGet(key) {
   return new Promise((resolve) => {
     const req = indexedDB.open('screencast', 1);
     req.onupgradeneeded = (e) => { e.target.result.createObjectStore('blobs'); };
     req.onsuccess = (e) => {
       const db = e.target.result;
       const tx = db.transaction('blobs', 'readonly');
-      const getReq = tx.objectStore('blobs').get('recording');
+      const getReq = tx.objectStore('blobs').get(key);
       getReq.onsuccess = () => { db.close(); resolve(getReq.result || null); };
       getReq.onerror = () => { db.close(); resolve(null); };
     };
     req.onerror = () => resolve(null);
   });
+}
+
+// Try final blob first, then reconstruct from progressive batches
+async function loadBlobFromIDB() {
+  // 1. Try the complete final blob
+  const final = await idbGet('recording');
+  if (final) return final;
+
+  // 2. Reconstruct from progressive batches saved during recording
+  const meta = await idbGet('batch-meta');
+  if (!meta || !meta.count) return null;
+
+  const batches = [];
+  for (let i = 0; i < meta.count; i++) {
+    const batch = await idbGet(`batch-${i}`);
+    if (batch) batches.push(batch);
+    else break;
+  }
+
+  if (batches.length === 0) return null;
+  return new Blob(batches, { type: meta.mimeType || 'video/webm' });
 }
 
 // === Auth Sync: Read Supabase token from web app ===

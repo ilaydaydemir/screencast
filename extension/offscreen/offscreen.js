@@ -24,16 +24,26 @@ let micStream = null;
 let audioContext = null;
 let rafId = null;
 let keepAliveCtx = null;
+let progressBatchCount = 0;
+let pendingChunks = [];
+let currentMimeType = 'video/webm';
 
-// === IndexedDB: Persist blob so it survives offscreen document restarts ===
-function saveBlobToIDB(blob) {
+// === IndexedDB: Progressive chunk saving ===
+// Saves recording data every ~10 seconds so it survives offscreen document restarts.
+// Schema (all in 'blobs' store):
+//   'recording'     → final complete Blob (saved on stop)
+//   'batch-0', 'batch-1', ... → progressive Blob batches (saved during recording)
+//   'batch-meta'    → { count: N, mimeType: string }
+
+function idbOperation(mode, fn) {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open('screencast', 1);
     req.onupgradeneeded = (e) => { e.target.result.createObjectStore('blobs'); };
     req.onsuccess = (e) => {
       const db = e.target.result;
-      const tx = db.transaction('blobs', 'readwrite');
-      tx.objectStore('blobs').put(blob, 'recording');
+      const tx = db.transaction('blobs', mode);
+      const store = tx.objectStore('blobs');
+      fn(store, tx);
       tx.oncomplete = () => { db.close(); resolve(); };
       tx.onerror = () => { db.close(); reject(tx.error); };
     };
@@ -41,14 +51,14 @@ function saveBlobToIDB(blob) {
   });
 }
 
-function loadBlobFromIDB() {
+function idbGet(key) {
   return new Promise((resolve) => {
     const req = indexedDB.open('screencast', 1);
     req.onupgradeneeded = (e) => { e.target.result.createObjectStore('blobs'); };
     req.onsuccess = (e) => {
       const db = e.target.result;
       const tx = db.transaction('blobs', 'readonly');
-      const getReq = tx.objectStore('blobs').get('recording');
+      const getReq = tx.objectStore('blobs').get(key);
       getReq.onsuccess = () => { db.close(); resolve(getReq.result || null); };
       getReq.onerror = () => { db.close(); resolve(null); };
     };
@@ -56,28 +66,70 @@ function loadBlobFromIDB() {
   });
 }
 
-function clearBlobFromIDB() {
-  return new Promise((resolve) => {
-    const req = indexedDB.open('screencast', 1);
-    req.onupgradeneeded = (e) => { e.target.result.createObjectStore('blobs'); };
-    req.onsuccess = (e) => {
-      const db = e.target.result;
-      const tx = db.transaction('blobs', 'readwrite');
-      tx.objectStore('blobs').delete('recording');
-      tx.oncomplete = () => { db.close(); resolve(); };
-      tx.onerror = () => { db.close(); resolve(); };
-    };
-    req.onerror = () => resolve();
+// Save a batch of chunks + update metadata (called every ~10 seconds during recording)
+function saveProgressBatch(batchIndex, batchBlob, totalCount, mimeType) {
+  return idbOperation('readwrite', (store) => {
+    store.put(batchBlob, `batch-${batchIndex}`);
+    store.put({ count: totalCount, mimeType }, 'batch-meta');
   });
 }
 
-// === Keep Alive: play silent audio to prevent Chrome from closing offscreen ===
+// Save the final complete blob (called on stop)
+function saveFinalBlob(blob) {
+  return idbOperation('readwrite', (store) => {
+    store.put(blob, 'recording');
+  });
+}
+
+// Clear all recording data from IDB (called on new recording or discard)
+function clearAllIDB() {
+  return idbOperation('readwrite', (store) => {
+    store.clear();
+  });
+}
+
+// Load the final blob
+function loadFinalBlob() {
+  return idbGet('recording');
+}
+
+// Reconstruct recording from progressive batches (fallback when final blob is missing)
+async function reconstructFromBatches() {
+  const meta = await idbGet('batch-meta');
+  if (!meta || !meta.count) return null;
+
+  const batches = [];
+  for (let i = 0; i < meta.count; i++) {
+    const batch = await idbGet(`batch-${i}`);
+    if (batch) batches.push(batch);
+    else break; // If a batch is missing, use what we have
+  }
+
+  if (batches.length === 0) return null;
+  return new Blob(batches, { type: meta.mimeType || 'video/webm' });
+}
+
+// Try all sources: memory → final IDB blob → reconstruct from batches
+async function loadRecording() {
+  if (recordedBlob) return recordedBlob;
+
+  const final = await loadFinalBlob();
+  if (final) { recordedBlob = final; return final; }
+
+  const reconstructed = await reconstructFromBatches();
+  if (reconstructed) { recordedBlob = reconstructed; return reconstructed; }
+
+  return null;
+}
+
+// === Keep Alive: play near-silent audio to prevent Chrome from closing offscreen ===
 function startKeepAlive() {
   if (keepAliveCtx) return;
   keepAliveCtx = new AudioContext();
   const oscillator = keepAliveCtx.createOscillator();
+  oscillator.frequency.value = 1; // 1 Hz — inaudible
   const gain = keepAliveCtx.createGain();
-  gain.gain.value = 0.00001; // Silent
+  gain.gain.value = 0.01; // Low but detectable by Chrome as active audio
   oscillator.connect(gain);
   gain.connect(keepAliveCtx.destination);
   oscillator.start();
@@ -126,7 +178,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       stopKeepAlive();
       recordedBlob = null;
       chunks = [];
-      clearBlobFromIDB().catch(() => {});
+      pendingChunks = [];
+      progressBatchCount = 0;
+      clearAllIDB().catch(() => {});
       sendResponse({ success: true });
       return false;
 
@@ -364,21 +418,48 @@ function startMediaRecorder(stream) {
   startKeepAlive(); // Prevent Chrome from closing offscreen document
 
   const mimeType = getSupportedMimeType();
+  currentMimeType = mimeType;
+  progressBatchCount = 0;
+  pendingChunks = [];
+
+  // Clear old recording data from IDB before starting new recording
+  clearAllIDB().catch(() => {});
+
   mediaRecorder = new MediaRecorder(stream, {
     mimeType,
     videoBitsPerSecond: VIDEO_BITS_PER_SECOND,
   });
 
   mediaRecorder.ondataavailable = (e) => {
-    if (e.data.size > 0) chunks.push(e.data);
+    if (e.data.size > 0) {
+      chunks.push(e.data);
+      pendingChunks.push(e.data);
+
+      // Save batch to IDB every 10 chunks (~10 seconds)
+      // This ensures data survives even if Chrome kills the offscreen document
+      if (pendingChunks.length >= 10) {
+        const batch = new Blob(pendingChunks, { type: mimeType });
+        const idx = progressBatchCount++;
+        pendingChunks = [];
+        saveProgressBatch(idx, batch, progressBatchCount, mimeType).catch(() => {});
+      }
+    }
   };
 
   mediaRecorder.onstop = async () => {
+    // Save any remaining pending chunks to IDB
+    if (pendingChunks.length > 0) {
+      const batch = new Blob(pendingChunks, { type: mimeType });
+      const idx = progressBatchCount++;
+      pendingChunks = [];
+      try { await saveProgressBatch(idx, batch, progressBatchCount, mimeType); } catch {}
+    }
+
     recordedBlob = new Blob(chunks, { type: mimeType });
     const blobSize = recordedBlob.size;
 
-    // Persist to IndexedDB so blob survives if offscreen is closed
-    try { await saveBlobToIDB(recordedBlob); } catch {}
+    // Also save the complete blob for fast access
+    try { await saveFinalBlob(recordedBlob); } catch {}
 
     cleanup();
     chrome.runtime.sendMessage({
@@ -409,11 +490,7 @@ function handleStop() {
 
 // === Download ===
 async function handleDownload(title) {
-  let blob = recordedBlob;
-  if (!blob) {
-    blob = await loadBlobFromIDB();
-    if (blob) recordedBlob = blob;
-  }
+  const blob = await loadRecording();
   if (!blob) return;
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -425,11 +502,10 @@ async function handleDownload(title) {
 
 // === Upload to Supabase ===
 async function handleUpload({ title, duration, mode }) {
-  // Try loading from IndexedDB if blob was lost (offscreen restarted)
-  if (!recordedBlob) {
-    recordedBlob = await loadBlobFromIDB();
-  }
-  if (!recordedBlob) return { success: false, error: 'No recording' };
+  // Try all sources: memory → final IDB blob → reconstruct from progressive batches
+  const blob = await loadRecording();
+  if (!blob) return { success: false, error: 'No recording' };
+  recordedBlob = blob;
 
   // Get auth from web app
   const auth = await getWebAppAuth();
@@ -513,6 +589,7 @@ async function handleUpload({ title, duration, mode }) {
     stopKeepAlive(); // Upload done, safe to let Chrome close offscreen
     recordedBlob = null;
     chunks = [];
+    clearAllIDB().catch(() => {}); // Clean up IDB after successful upload
     return { success: true, recordingId: recording.id };
   } catch (err) {
     return { success: false, error: err.message };
