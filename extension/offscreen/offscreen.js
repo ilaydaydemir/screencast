@@ -25,65 +25,101 @@ let audioContext = null;
 let rafId = null;
 let keepAliveCtx = null;
 let currentMimeType = 'video/webm';
-let idb = null; // Persistent IDB connection
 let chunkIndex = 0;
 
-// === IndexedDB: Per-chunk saving with persistent connection ===
-// Each chunk is saved individually as its own transaction.
-// IDB transactions are atomic — once oncomplete fires, data is on disk.
-// This survives offscreen document death.
+// === IndexedDB: Fresh connection per operation ===
+// Each operation opens its own IDB connection. This eliminates the single
+// point of failure where a persistent connection fails and all saves become no-ops.
 //
 // Schema ('blobs' store):
 //   'recording'  → final complete Blob (saved on stop)
 //   'chunk-0', 'chunk-1', ... → individual chunks (saved every second during recording)
 //   'chunk-meta' → { count: N, mimeType: string }
 
-function openIDB() {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open('screencast', 1);
-    req.onupgradeneeded = (e) => { e.target.result.createObjectStore('blobs'); };
-    req.onsuccess = (e) => { idb = e.target.result; resolve(); };
-    req.onerror = () => { idb = null; reject(req.error); };
-  });
-}
-
 // Save a single chunk — called every second during recording
 function saveChunkToIDB(index, chunk, mimeType) {
-  if (!idb) return Promise.resolve();
   return new Promise((resolve) => {
     try {
-      const tx = idb.transaction('blobs', 'readwrite');
-      const store = tx.objectStore('blobs');
-      store.put(chunk, `chunk-${index}`);
-      store.put({ count: index + 1, mimeType }, 'chunk-meta');
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => resolve(); // Don't block recording on IDB error
-    } catch { resolve(); }
+      const req = indexedDB.open('screencast', 1);
+      req.onupgradeneeded = (e) => { e.target.result.createObjectStore('blobs'); };
+      req.onsuccess = (e) => {
+        const db = e.target.result;
+        try {
+          const tx = db.transaction('blobs', 'readwrite');
+          const store = tx.objectStore('blobs');
+          store.put(chunk, `chunk-${index}`);
+          store.put({ count: index + 1, mimeType }, 'chunk-meta');
+          tx.oncomplete = () => {
+            console.log(`[Screencast IDB] Saved chunk-${index} (${chunk.size} bytes)`);
+            db.close();
+            resolve();
+          };
+          tx.onerror = (err) => {
+            console.error(`[Screencast IDB] Chunk-${index} tx error:`, err);
+            db.close();
+            resolve();
+          };
+        } catch (e2) {
+          console.error(`[Screencast IDB] Chunk-${index} exception:`, e2);
+          db.close();
+          resolve();
+        }
+      };
+      req.onerror = (e) => {
+        console.error(`[Screencast IDB] Open failed for chunk-${index}:`, e);
+        resolve();
+      };
+    } catch (e3) {
+      console.error(`[Screencast IDB] Outer exception for chunk-${index}:`, e3);
+      resolve();
+    }
   });
 }
 
 // Save the final complete blob
 function saveFinalBlobToIDB(blob) {
-  if (!idb) return Promise.resolve();
   return new Promise((resolve) => {
     try {
-      const tx = idb.transaction('blobs', 'readwrite');
-      tx.objectStore('blobs').put(blob, 'recording');
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => resolve();
+      const req = indexedDB.open('screencast', 1);
+      req.onupgradeneeded = (e) => { e.target.result.createObjectStore('blobs'); };
+      req.onsuccess = (e) => {
+        const db = e.target.result;
+        try {
+          const tx = db.transaction('blobs', 'readwrite');
+          tx.objectStore('blobs').put(blob, 'recording');
+          tx.oncomplete = () => {
+            console.log(`[Screencast IDB] Saved final blob (${blob.size} bytes)`);
+            db.close();
+            resolve();
+          };
+          tx.onerror = () => { db.close(); resolve(); };
+        } catch { db.close(); resolve(); }
+      };
+      req.onerror = () => resolve();
     } catch { resolve(); }
   });
 }
 
 // Clear all data (new recording or discard)
 function clearIDB() {
-  if (!idb) return Promise.resolve();
   return new Promise((resolve) => {
     try {
-      const tx = idb.transaction('blobs', 'readwrite');
-      tx.objectStore('blobs').clear();
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => resolve();
+      const req = indexedDB.open('screencast', 1);
+      req.onupgradeneeded = (e) => { e.target.result.createObjectStore('blobs'); };
+      req.onsuccess = (e) => {
+        const db = e.target.result;
+        try {
+          const tx = db.transaction('blobs', 'readwrite');
+          tx.objectStore('blobs').clear();
+          tx.oncomplete = () => {
+            console.log('[Screencast IDB] Cleared all data');
+            db.close();
+            resolve();
+          };
+          tx.onerror = () => { db.close(); resolve(); };
+        } catch { db.close(); resolve(); }
+      };
+      req.onerror = () => resolve();
     } catch { resolve(); }
   });
 }
@@ -92,24 +128,18 @@ function clearIDB() {
 function idbGet(key) {
   return new Promise((resolve) => {
     try {
-      // Use persistent connection if available, otherwise open fresh
-      if (idb) {
-        const tx = idb.transaction('blobs', 'readonly');
-        const req = tx.objectStore('blobs').get(key);
-        req.onsuccess = () => resolve(req.result || null);
-        req.onerror = () => resolve(null);
-      } else {
-        const openReq = indexedDB.open('screencast', 1);
-        openReq.onupgradeneeded = (e) => { e.target.result.createObjectStore('blobs'); };
-        openReq.onsuccess = (e) => {
-          const db = e.target.result;
+      const openReq = indexedDB.open('screencast', 1);
+      openReq.onupgradeneeded = (e) => { e.target.result.createObjectStore('blobs'); };
+      openReq.onsuccess = (e) => {
+        const db = e.target.result;
+        try {
           const tx = db.transaction('blobs', 'readonly');
           const getReq = tx.objectStore('blobs').get(key);
           getReq.onsuccess = () => { db.close(); resolve(getReq.result || null); };
           getReq.onerror = () => { db.close(); resolve(null); };
-        };
-        openReq.onerror = () => resolve(null);
-      }
+        } catch { db.close(); resolve(null); }
+      };
+      openReq.onerror = () => resolve(null);
     } catch { resolve(null); }
   });
 }
@@ -117,17 +147,18 @@ function idbGet(key) {
 // Reconstruct recording from individual chunks saved during recording
 async function reconstructFromChunks() {
   const meta = await idbGet('chunk-meta');
+  console.log('[Screencast] chunk-meta:', meta);
   if (!meta || !meta.count) return null;
 
   const parts = [];
   for (let i = 0; i < meta.count; i++) {
     const chunk = await idbGet(`chunk-${i}`);
     if (chunk) parts.push(chunk);
-    else break;
+    else { console.log(`[Screencast] Missing chunk-${i}, stopping`); break; }
   }
 
   if (parts.length === 0) return null;
-  console.log(`[Screencast] Reconstructed recording from ${parts.length} chunks`);
+  console.log(`[Screencast] Reconstructed recording from ${parts.length}/${meta.count} chunks`);
   return new Blob(parts, { type: meta.mimeType || 'video/webm' });
 }
 
@@ -328,7 +359,7 @@ async function startTabMode(streamId, micId) {
 
   destination.stream.getAudioTracks().forEach(t => compositeStream.addTrack(t));
 
-  startMediaRecorder(compositeStream);
+  await startMediaRecorder(compositeStream);
 }
 
 // === Desktop/Window Mode (Canvas Compositing) ===
@@ -432,7 +463,7 @@ async function startDesktopMode(streamId, cameraId, micId) {
 
   destination.stream.getAudioTracks().forEach(t => compositeStream.addTrack(t));
 
-  startMediaRecorder(compositeStream);
+  await startMediaRecorder(compositeStream);
 }
 
 // === Camera Only ===
@@ -442,7 +473,7 @@ async function startCameraOnlyMode(cameraId, micId) {
   if (micId) constraints.audio = { deviceId: { exact: micId } };
 
   webcamStream = await navigator.mediaDevices.getUserMedia(constraints);
-  startMediaRecorder(webcamStream);
+  await startMediaRecorder(webcamStream);
 }
 
 // === MediaRecorder ===
@@ -455,9 +486,27 @@ async function startMediaRecorder(stream) {
   currentMimeType = mimeType;
   chunkIndex = 0;
 
-  // Open persistent IDB connection and clear old data
-  try { await openIDB(); } catch {}
+  // Clear old data from IDB (fresh connection)
   await clearIDB();
+
+  // Verify IDB works by doing a test write
+  try {
+    await new Promise((resolve, reject) => {
+      const req = indexedDB.open('screencast', 1);
+      req.onupgradeneeded = (e) => { e.target.result.createObjectStore('blobs'); };
+      req.onsuccess = (e) => {
+        const db = e.target.result;
+        const tx = db.transaction('blobs', 'readwrite');
+        tx.objectStore('blobs').put('test', '_idb_test');
+        tx.oncomplete = () => { db.close(); resolve(); };
+        tx.onerror = () => { db.close(); reject(new Error('IDB test write failed')); };
+      };
+      req.onerror = () => reject(new Error('IDB open failed'));
+    });
+    console.log('[Screencast] IDB test write OK — chunk saving will work');
+  } catch (idbErr) {
+    console.error('[Screencast] IDB NOT WORKING:', idbErr);
+  }
 
   mediaRecorder = new MediaRecorder(stream, {
     mimeType,
@@ -467,7 +516,7 @@ async function startMediaRecorder(stream) {
   mediaRecorder.ondataavailable = (e) => {
     if (e.data.size > 0) {
       chunks.push(e.data);
-      // Save EVERY chunk to IDB immediately — atomic transaction, on disk when complete
+      // Save EVERY chunk to IDB — each opens its own fresh connection
       const idx = chunkIndex++;
       saveChunkToIDB(idx, e.data, mimeType);
     }
@@ -479,7 +528,9 @@ async function startMediaRecorder(stream) {
     console.log(`[Screencast] Recording stopped: ${blobSize} bytes, ${chunks.length} chunks`);
 
     // Save complete blob to IDB for fast access
-    try { await saveFinalBlobToIDB(recordedBlob); } catch {}
+    try { await saveFinalBlobToIDB(recordedBlob); } catch (e) {
+      console.error('[Screencast] saveFinalBlobToIDB failed:', e);
+    }
 
     cleanup();
     chrome.runtime.sendMessage({
@@ -492,7 +543,7 @@ async function startMediaRecorder(stream) {
     }
   };
 
-  console.log('[Screencast] MediaRecorder started, saving each chunk to IDB');
+  console.log(`[Screencast] MediaRecorder started (${mimeType}), saving each chunk to IDB`);
   mediaRecorder.start(1000);
 }
 

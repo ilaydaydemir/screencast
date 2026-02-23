@@ -459,8 +459,10 @@ async function downloadRecording() {
   }
 
   // Fallback: ask offscreen document
-  await sendMessage({ action: 'downloadRecording', title });
-  alert('No recording found. The recording may have been lost.');
+  const result = await sendMessage({ action: 'downloadRecording', title });
+  if (!result || !result.success) {
+    alert('No recording found in IDB. Check chrome://extensions → offscreen console for [Screencast IDB] logs.');
+  }
 }
 
 // === Upload ===
@@ -598,20 +600,28 @@ function idbGet(key) {
 async function loadRecordingBlob() {
   // 1. Try the complete final blob (saved on stop)
   const final = await idbGet('recording');
-  if (final) return final;
+  if (final) {
+    console.log('[Screencast Popup] Found final blob in IDB:', final.size, 'bytes');
+    return final;
+  }
 
   // 2. Reconstruct from chunks saved every second during recording
   const meta = await idbGet('chunk-meta');
-  if (!meta || !meta.count) return null;
+  console.log('[Screencast Popup] chunk-meta:', meta);
+  if (!meta || !meta.count) {
+    console.log('[Screencast Popup] No chunk-meta found in IDB');
+    return null;
+  }
 
   const parts = [];
   for (let i = 0; i < meta.count; i++) {
     const chunk = await idbGet(`chunk-${i}`);
     if (chunk) parts.push(chunk);
-    else break;
+    else { console.log(`[Screencast Popup] Missing chunk-${i}`); break; }
   }
 
   if (parts.length === 0) return null;
+  console.log(`[Screencast Popup] Reconstructed from ${parts.length}/${meta.count} chunks`);
   return new Blob(parts, { type: meta.mimeType || 'video/webm' });
 }
 
