@@ -70,7 +70,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (state && state.state === 'stopped') {
     elapsedSeconds = state.elapsed || 0;
     showView('done');
-    recordingInfo.textContent = `${formatTime(elapsedSeconds)} recorded`;
+    // Auto-upload is in progress
+    recordingInfo.textContent = 'Saving to Screencast...';
+    titleInput.style.display = 'none';
+    downloadBtn.parentElement.style.display = 'none';
+    discardBtn.style.display = 'none';
     return;
   }
 
@@ -422,8 +426,11 @@ async function stopRecording() {
   const response = await sendMessage({ action: 'stopRecording' });
   if (response && response.success) {
     showView('done');
-    const size = response.blobSize ? ` (${formatSize(response.blobSize)})` : '';
-    recordingInfo.textContent = `${formatTime(elapsedSeconds)} recorded${size}`;
+    // Show saving state (auto-upload happens in background)
+    recordingInfo.textContent = 'Saving to Screencast...';
+    titleInput.style.display = 'none';
+    downloadBtn.parentElement.style.display = 'none';
+    discardBtn.style.display = 'none';
   }
 }
 
@@ -484,7 +491,31 @@ chrome.runtime.onMessage.addListener((message) => {
   if (message.action === 'recordingStopped') {
     clearInterval(timerInterval);
     showView('done');
+    recordingInfo.textContent = 'Saving to Screencast...';
+    titleInput.style.display = 'none';
+    downloadBtn.parentElement.style.display = 'none';
+    discardBtn.style.display = 'none';
+  }
+  if (message.action === 'autoUploadComplete') {
+    recordingInfo.textContent = 'Saved! Opening dashboard...';
+    setTimeout(() => {
+      chrome.tabs.create({ url: 'https://screencast-eight.vercel.app/dashboard' });
+      window.close();
+    }, 1000);
+  }
+  if (message.action === 'autoUploadFailed') {
+    // Show manual controls so user can download or retry
     recordingInfo.textContent = `${formatTime(elapsedSeconds)} recorded`;
+    titleInput.style.display = '';
+    downloadBtn.parentElement.style.display = '';
+    discardBtn.style.display = '';
+  }
+  if (message.action === 'recordingCancelled') {
+    clearInterval(timerInterval);
+    showView('setup');
+    startBtn.disabled = false;
+    startBtn.textContent = 'Start Recording';
+    enumerateDevices();
   }
 });
 

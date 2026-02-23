@@ -23,6 +23,72 @@ let webcamStream = null;
 let micStream = null;
 let audioContext = null;
 let rafId = null;
+let keepAliveCtx = null;
+
+// === IndexedDB: Persist blob so it survives offscreen document restarts ===
+function saveBlobToIDB(blob) {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open('screencast', 1);
+    req.onupgradeneeded = (e) => { e.target.result.createObjectStore('blobs'); };
+    req.onsuccess = (e) => {
+      const db = e.target.result;
+      const tx = db.transaction('blobs', 'readwrite');
+      tx.objectStore('blobs').put(blob, 'recording');
+      tx.oncomplete = () => { db.close(); resolve(); };
+      tx.onerror = () => { db.close(); reject(tx.error); };
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function loadBlobFromIDB() {
+  return new Promise((resolve) => {
+    const req = indexedDB.open('screencast', 1);
+    req.onupgradeneeded = (e) => { e.target.result.createObjectStore('blobs'); };
+    req.onsuccess = (e) => {
+      const db = e.target.result;
+      const tx = db.transaction('blobs', 'readonly');
+      const getReq = tx.objectStore('blobs').get('recording');
+      getReq.onsuccess = () => { db.close(); resolve(getReq.result || null); };
+      getReq.onerror = () => { db.close(); resolve(null); };
+    };
+    req.onerror = () => resolve(null);
+  });
+}
+
+function clearBlobFromIDB() {
+  return new Promise((resolve) => {
+    const req = indexedDB.open('screencast', 1);
+    req.onupgradeneeded = (e) => { e.target.result.createObjectStore('blobs'); };
+    req.onsuccess = (e) => {
+      const db = e.target.result;
+      const tx = db.transaction('blobs', 'readwrite');
+      tx.objectStore('blobs').delete('recording');
+      tx.oncomplete = () => { db.close(); resolve(); };
+      tx.onerror = () => { db.close(); resolve(); };
+    };
+    req.onerror = () => resolve();
+  });
+}
+
+// === Keep Alive: play silent audio to prevent Chrome from closing offscreen ===
+function startKeepAlive() {
+  if (keepAliveCtx) return;
+  keepAliveCtx = new AudioContext();
+  const oscillator = keepAliveCtx.createOscillator();
+  const gain = keepAliveCtx.createGain();
+  gain.gain.value = 0.00001; // Silent
+  oscillator.connect(gain);
+  gain.connect(keepAliveCtx.destination);
+  oscillator.start();
+}
+
+function stopKeepAlive() {
+  if (keepAliveCtx) {
+    keepAliveCtx.close().catch(() => {});
+    keepAliveCtx = null;
+  }
+}
 
 // === Message Handler ===
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -48,9 +114,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return false;
 
     case 'downloadRecording':
-      handleDownload(message.title);
-      sendResponse({ success: true });
-      return false;
+      handleDownload(message.title).then(() => sendResponse({ success: true }));
+      return true;
 
     case 'uploadToWebApp':
       handleUpload(message).then(sendResponse);
@@ -58,14 +123,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     case 'discardRecording':
       cleanup();
+      stopKeepAlive();
       recordedBlob = null;
       chunks = [];
+      clearBlobFromIDB().catch(() => {});
       sendResponse({ success: true });
       return false;
 
     case 'enumerateDevices':
       handleEnumerateDevices().then(sendResponse);
       return true;
+
+    case 'keepAlive':
+      // Just respond to keep the offscreen document alive
+      sendResponse({ alive: true, hasRecording: !!mediaRecorder, hasBlob: !!recordedBlob });
+      return false;
   }
 });
 
@@ -289,6 +361,8 @@ async function startCameraOnlyMode(cameraId, micId) {
 let stopResolve = null;
 
 function startMediaRecorder(stream) {
+  startKeepAlive(); // Prevent Chrome from closing offscreen document
+
   const mimeType = getSupportedMimeType();
   mediaRecorder = new MediaRecorder(stream, {
     mimeType,
@@ -299,9 +373,13 @@ function startMediaRecorder(stream) {
     if (e.data.size > 0) chunks.push(e.data);
   };
 
-  mediaRecorder.onstop = () => {
+  mediaRecorder.onstop = async () => {
     recordedBlob = new Blob(chunks, { type: mimeType });
     const blobSize = recordedBlob.size;
+
+    // Persist to IndexedDB so blob survives if offscreen is closed
+    try { await saveBlobToIDB(recordedBlob); } catch {}
+
     cleanup();
     chrome.runtime.sendMessage({
       action: 'recordingStopped',
@@ -330,9 +408,14 @@ function handleStop() {
 }
 
 // === Download ===
-function handleDownload(title) {
-  if (!recordedBlob) return;
-  const url = URL.createObjectURL(recordedBlob);
+async function handleDownload(title) {
+  let blob = recordedBlob;
+  if (!blob) {
+    blob = await loadBlobFromIDB();
+    if (blob) recordedBlob = blob;
+  }
+  if (!blob) return;
+  const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
   a.download = `${title || 'recording'}.webm`;
@@ -342,6 +425,10 @@ function handleDownload(title) {
 
 // === Upload to Supabase ===
 async function handleUpload({ title, duration, mode }) {
+  // Try loading from IndexedDB if blob was lost (offscreen restarted)
+  if (!recordedBlob) {
+    recordedBlob = await loadBlobFromIDB();
+  }
   if (!recordedBlob) return { success: false, error: 'No recording' };
 
   // Get auth from web app
@@ -423,6 +510,7 @@ async function handleUpload({ title, duration, mode }) {
     });
 
     sendProgress(100);
+    stopKeepAlive(); // Upload done, safe to let Chrome close offscreen
     recordedBlob = null;
     chunks = [];
     return { success: true, recordingId: recording.id };
@@ -471,6 +559,8 @@ function sendProgress(progress) {
 }
 
 function cleanup() {
+  // NOTE: Do NOT call stopKeepAlive() here - we need the offscreen document
+  // alive for download/upload after recording stops. It's stopped on discard.
   if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
   if (screenStream) { screenStream.getTracks().forEach(t => t.stop()); screenStream = null; }
   if (webcamStream) { webcamStream.getTracks().forEach(t => t.stop()); webcamStream = null; }
