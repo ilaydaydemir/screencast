@@ -451,7 +451,14 @@ async function stopRecording() {
 // === Download ===
 async function downloadRecording() {
   const title = titleInput.value || 'recording';
-  await sendMessage({ action: 'downloadRecording', title });
+  downloadBtn.disabled = true;
+  downloadBtn.textContent = 'Downloading...';
+  const result = await sendMessage({ action: 'downloadRecording', title });
+  downloadBtn.disabled = false;
+  downloadBtn.textContent = 'Download';
+  if (result && !result.success) {
+    recordingInfo.innerHTML = `<div style="color:#f87171;font-size:13px;">${result.error || 'Download failed'}</div>`;
+  }
 }
 
 // === Upload ===

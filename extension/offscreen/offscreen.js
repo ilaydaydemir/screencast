@@ -114,7 +114,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return false;
 
     case 'downloadRecording':
-      handleDownload(message.title).then(() => sendResponse({ success: true }));
+      handleDownload(message.title).then(r => sendResponse(r || { success: true }));
       return true;
 
     case 'uploadToWebApp':
@@ -135,9 +135,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
 
     case 'keepAlive':
-      // Just respond to keep the offscreen document alive
-      sendResponse({ alive: true, hasRecording: !!mediaRecorder, hasBlob: !!recordedBlob });
-      return false;
+      // Respond to keep the offscreen document alive
+      // Also check IDB asynchronously if no blob in memory
+      if (recordedBlob) {
+        sendResponse({ alive: true, hasRecording: !!mediaRecorder, hasBlob: true });
+        return false;
+      }
+      // Check IDB for blob
+      loadBlobFromIDB().then(blob => {
+        if (blob) recordedBlob = blob;
+        sendResponse({ alive: true, hasRecording: !!mediaRecorder, hasBlob: !!blob });
+      });
+      return true;
   }
 });
 
@@ -376,11 +385,24 @@ function startMediaRecorder(stream) {
   mediaRecorder.onstop = async () => {
     recordedBlob = new Blob(chunks, { type: mimeType });
     const blobSize = recordedBlob.size;
+    console.log('[Screencast] Recording stopped, blob size:', blobSize);
 
     // Persist to IndexedDB so blob survives if offscreen is closed
-    try { await saveBlobToIDB(recordedBlob); } catch {}
+    try {
+      await saveBlobToIDB(recordedBlob);
+      // Verify the save worked
+      const verifyBlob = await loadBlobFromIDB();
+      if (!verifyBlob) {
+        console.error('[Screencast] IDB save verification failed — blob not found after save');
+      } else {
+        console.log('[Screencast] IDB save verified, stored size:', verifyBlob.size);
+      }
+    } catch (e) {
+      console.error('[Screencast] IDB save failed:', e);
+    }
 
     cleanup();
+    // Do NOT stop keepAlive here — offscreen must stay alive for upload/download
     chrome.runtime.sendMessage({
       action: 'recordingStopped',
       blobSize,
@@ -411,25 +433,45 @@ function handleStop() {
 async function handleDownload(title) {
   let blob = recordedBlob;
   if (!blob) {
-    blob = await loadBlobFromIDB();
-    if (blob) recordedBlob = blob;
+    // Retry IDB load
+    for (let i = 0; i < 3; i++) {
+      blob = await loadBlobFromIDB();
+      if (blob) { recordedBlob = blob; break; }
+      await new Promise(r => setTimeout(r, 300));
+    }
   }
-  if (!blob) return;
+  if (!blob) {
+    console.error('[Screencast] Download failed: no blob in memory or IDB');
+    return { success: false, error: 'No recording found' };
+  }
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
   a.download = `${title || 'recording'}.webm`;
   a.click();
   URL.revokeObjectURL(url);
+  return { success: true };
 }
 
 // === Upload to Supabase ===
 async function handleUpload({ title, duration, mode }) {
   // Try loading from IndexedDB if blob was lost (offscreen restarted)
   if (!recordedBlob) {
-    recordedBlob = await loadBlobFromIDB();
+    // Retry IDB load several times — blob save might still be in progress
+    for (let i = 0; i < 5; i++) {
+      recordedBlob = await loadBlobFromIDB();
+      if (recordedBlob) {
+        console.log('[Screencast] Loaded blob from IDB on attempt', i + 1, 'size:', recordedBlob.size);
+        break;
+      }
+      console.log('[Screencast] IDB load attempt', i + 1, 'returned null, retrying...');
+      await new Promise(r => setTimeout(r, 500));
+    }
   }
-  if (!recordedBlob) return { success: false, error: 'No recording found. The recording may have been lost.' };
+  if (!recordedBlob) {
+    console.error('[Screencast] No recording blob found in memory or IDB after 5 attempts');
+    return { success: false, error: 'No recording found. The recording may have been lost.' };
+  }
 
   // Refresh auth token if needed (fixes expired token issue)
   await refreshAuthIfNeeded();

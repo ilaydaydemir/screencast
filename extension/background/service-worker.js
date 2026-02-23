@@ -545,8 +545,11 @@ async function handleStopRecording() {
   recordingState = 'stopped';
   currentCameraId = null;
 
-  // Auto-upload to web app (like Loom - saves automatically on stop)
-  setTimeout(() => autoUpload(savedElapsed, savedMode), 1000);
+  // Keep offscreen alive by pinging it
+  forwardToOffscreen({ action: 'keepAlive' }).catch(() => {});
+
+  // Auto-upload immediately (no delay — offscreen doc may be closed by Chrome if we wait)
+  autoUpload(savedElapsed, savedMode);
 
   return { success: true, elapsed: savedElapsed, blobSize: stopResult?.blobSize || 0 };
 }
@@ -572,6 +575,15 @@ async function autoUpload(duration, mode) {
 
   try {
     await ensureOffscreenDocument();
+
+    // Verify offscreen has a blob before attempting upload
+    const check = await forwardToOffscreen({ action: 'keepAlive' });
+    if (!check || !check.hasBlob) {
+      // Blob might not be loaded yet from IDB in fresh document — wait and retry
+      await new Promise(r => setTimeout(r, 500));
+      await ensureOffscreenDocument();
+    }
+
     const result = await forwardToOffscreen({
       action: 'uploadToWebApp',
       title,
