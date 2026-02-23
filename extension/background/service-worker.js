@@ -560,11 +560,11 @@ async function startDesktopRecording(mode, tab, cameraId, micId, recordingId, au
   await injectBubbleAndToolbar(tab.id, cameraId, 0, false);
   bubbleTabId = tab.id;
 
+  const recorderTab = await chrome.tabs.get(recorderTabId);
   return new Promise((resolve) => {
     const sources = mode === 'full-screen' ? ['screen'] : ['window'];
     // Pass the recorder tab as targetTab so the stream is bound to it
     // (the recorder tab is where getUserMedia will consume the stream).
-    const recorderTab = await chrome.tabs.get(recorderTabId);
     chrome.desktopCapture.chooseDesktopMedia(sources, recorderTab, async (streamId) => {
       if (!streamId) {
         await removeBubble(tab.id);
