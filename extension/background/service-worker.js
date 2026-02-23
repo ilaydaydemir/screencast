@@ -647,12 +647,13 @@ async function assembleAndFinalize(duration, mode) {
 
     if (res.ok) {
       recordingState = 'idle';
+      const completedId = lastRecordingId;
       lastRecordingId = null;
       await chrome.storage.session.remove(['lastRecordingId']);
       // Clean up IDB + close recorder tab
       await forwardToRecorderTab({ action: 'discardRecording' });
       await closeRecorderTab();
-      chrome.runtime.sendMessage({ action: 'autoUploadComplete', recordingId: lastRecordingId }).catch(() => {});
+      chrome.runtime.sendMessage({ action: 'autoUploadComplete', recordingId: completedId }).catch(() => {});
       return;
     }
 
@@ -847,7 +848,11 @@ async function forwardToRecorderTab(msg) {
     }
   }
   try {
-    return await chrome.tabs.sendMessage(recorderTabId, { ...msg, target: 'recorder' });
+    // Use chrome.runtime.sendMessage (not chrome.tabs.sendMessage) because the
+    // recorder tab is an extension page, not a content script. Extension pages
+    // listen via chrome.runtime.onMessage. The target:'recorder' filter ensures
+    // only the recorder page handles it (service worker ignores it).
+    return await chrome.runtime.sendMessage({ ...msg, target: 'recorder' });
   } catch (err) {
     console.error('Failed to forward to recorder tab:', err);
     return { success: false, error: err.message };
