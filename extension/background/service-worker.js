@@ -201,9 +201,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return false;
 
     case 'desktopRecordingStopped':
-      // User clicked Chrome's "Stop sharing" button
+      // User clicked Chrome's "Stop sharing" button — content script auto-stops + uploads
       recordingState = 'stopped';
       clearInterval(timerInterval);
+      // Relay to popup so it shows the done view
+      chrome.runtime.sendMessage({ action: 'recordingStopped', blobSize: 1 }).catch(() => {});
       if (bubbleTabId) {
         chrome.tabs.sendMessage(bubbleTabId, { action: 'recordingStopped' }).catch(() => {});
       }
@@ -215,9 +217,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       isDesktopContentScript = false;
       if (message.success && !message.discarded) {
         lastRecordingId = message.recordingId;
-      }
-      if (message.discarded) {
+        // Notify popup — upload succeeded
+        chrome.runtime.sendMessage({ action: 'autoUploadComplete' }).catch(() => {});
+      } else if (message.discarded) {
         lastRecordingId = null;
+      } else {
+        // Upload failed — notify popup
+        chrome.runtime.sendMessage({ action: 'autoUploadFailed', error: message.error }).catch(() => {});
       }
       if (bubbleTabId) {
         chrome.tabs.sendMessage(bubbleTabId, { action: 'recordingStopped' }).catch(() => {});
@@ -724,6 +730,10 @@ async function handleStopRecording() {
   if (isDesktopContentScript) {
     if (activeTabId) {
       chrome.tabs.sendMessage(activeTabId, { action: 'stopDesktopRecording' }).catch(() => {});
+    }
+    if (bubbleTabId) {
+      removeBubble(bubbleTabId).catch(() => {});
+      bubbleTabId = null;
     }
     // Content script handles upload via desktopRecordingComplete message
     recordingState = 'stopped';
