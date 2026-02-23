@@ -1,22 +1,68 @@
 // Screencast - Background Service Worker
 // Orchestrates recording: tab capture, desktop capture, messaging, toolbar
+// Uses a pinned recorder tab instead of offscreen document for reliability.
+
+// === Constants ===
+const SUPABASE_URL = 'https://bgsvuywxejpmkstgqizq.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJnc3Z1eXd4ZWpwbWtzdGdxaXpxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE2MDc0MzMsImV4cCI6MjA4NzE4MzQzM30.EvHOy5sBbXzSxjRS5vPGzm8cnFrOXxDfclP-ru3VU_M';
 
 // === State ===
 let recordingState = 'idle'; // idle | recording | paused | stopped
 let currentMode = null;
 let activeTabId = null;
 let bubbleTabId = null;
+let recorderTabId = null;
 let currentCameraId = null;
 let elapsedSeconds = 0;
 let timerInterval = null;
 let uploadError = null;
+let lastRecordingId = null;
+let recorderTabReady = false;
+
+// === Port connection from recorder tab (keeps SW alive) ===
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name === 'recorder') {
+    port.onDisconnect.addListener(() => {
+      // Recorder tab disconnected — could be closed or crashed
+    });
+  }
+});
+
+// === Recorder Tab Lifecycle Monitoring ===
+chrome.tabs.onRemoved.addListener((tabId) => {
+  if (tabId === recorderTabId) {
+    recorderTabId = null;
+    recorderTabReady = false;
+    if (recordingState === 'recording' || recordingState === 'paused') {
+      clearInterval(timerInterval);
+      recordingState = 'stopped';
+      if (bubbleTabId) {
+        removeBubble(bubbleTabId).catch(() => {});
+        bubbleTabId = null;
+      }
+      // Notify popup — IDB has chunks for recovery
+      chrome.runtime.sendMessage({
+        action: 'recorderTabClosed',
+        recoverable: true,
+        recordingId: lastRecordingId,
+      }).catch(() => {});
+    }
+  }
+});
+
 // === Message Router ===
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.target === 'offscreen') return false;
+  if (message.target === 'recorder') return false;
 
   switch (message.action) {
     case 'getState':
-      sendResponse({ state: recordingState, mode: currentMode, elapsed: elapsedSeconds, uploadError });
+      sendResponse({
+        state: recordingState,
+        mode: currentMode,
+        elapsed: elapsedSeconds,
+        uploadError,
+        recordingId: lastRecordingId,
+      });
       return false;
 
     case 'startRecording':
@@ -41,16 +87,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     case 'downloadRecording':
       (async () => {
-        await ensureOffscreenDocument();
-        const result = await forwardToOffscreen({ action: 'downloadRecording', title: message.title });
+        await ensureRecorderTab();
+        const result = await forwardToRecorderTab({ action: 'downloadRecording', title: message.title });
         sendResponse(result);
       })();
       return true;
 
     case 'uploadToWebApp':
       (async () => {
-        await ensureOffscreenDocument();
-        const result = await forwardToOffscreen({
+        await ensureRecorderTab();
+        const result = await forwardToRecorderTab({
           action: 'uploadToWebApp',
           title: message.title,
           duration: message.duration,
@@ -61,26 +107,35 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
 
     case 'discardRecording':
-      forwardToOffscreen({ action: 'discardRecording' }).then(() => {
+      (async () => {
+        await forwardToRecorderTab({ action: 'discardRecording' });
         recordingState = 'idle';
+        lastRecordingId = null;
+        await chrome.storage.session.remove(['lastRecordingId']);
+        // Close recorder tab after discard
+        await closeRecorderTab();
         sendResponse({ success: true });
-      });
+      })();
       return true;
 
     case 'enumerateDevices':
       (async () => {
-        await ensureOffscreenDocument();
-        const result = await forwardToOffscreen({ action: 'enumerateDevices' });
+        await ensureRecorderTab();
+        const result = await forwardToRecorderTab({ action: 'enumerateDevices' });
         sendResponse(result);
       })();
       return true;
 
-    // From offscreen
+    // From recorder tab
     case 'recordingStopped':
       recordingState = 'stopped';
       clearInterval(timerInterval);
       // Relay to popup
-      chrome.runtime.sendMessage({ action: 'recordingStopped', blobSize: message.blobSize }).catch(() => {});
+      chrome.runtime.sendMessage({
+        action: 'recordingStopped',
+        blobSize: message.blobSize,
+        progressiveUploadOk: message.progressiveUploadOk,
+      }).catch(() => {});
       // Relay to content script toolbar
       if (bubbleTabId) {
         chrome.tabs.sendMessage(bubbleTabId, { action: 'recordingStopped' }).catch(() => {});
@@ -93,20 +148,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 chrome.tabs.onActivated.addListener(async (activeInfo) => {
   if (recordingState !== 'recording' && recordingState !== 'paused') return;
   if (currentMode === 'camera-only') return;
-  if (currentMode === 'tab') return; // Tab mode: bubble stays in captured tab
+  if (currentMode === 'tab') return;
 
   const newTabId = activeInfo.tabId;
   if (newTabId === bubbleTabId) return;
+  // Don't inject into the recorder tab
+  if (newTabId === recorderTabId) return;
 
-  // Remove from old tab (this stops the old webcam stream)
   if (bubbleTabId) {
     await removeBubble(bubbleTabId);
     bubbleTabId = null;
-    // Wait for camera to fully release before re-acquiring on new tab
     await new Promise(r => setTimeout(r, 500));
   }
 
-  // Check if we can inject into this tab
   try {
     const tab = await chrome.tabs.get(newTabId);
     if (tab.url && !tab.url.startsWith('chrome://') && !tab.url.startsWith('chrome-extension://') && !tab.url.startsWith('about:')) {
@@ -135,19 +189,56 @@ async function handleStartRecording({ mode, cameraId, micId }) {
   currentMode = mode;
   currentCameraId = cameraId;
   elapsedSeconds = 0;
+  uploadError = null;
 
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     activeTabId = tab.id;
 
-    await ensureOffscreenDocument();
+    // Create recording row UPFRONT (gives us recordingId for progressive upload)
+    const auth = await chrome.storage.local.get(['authToken', 'userId']);
+    let recordingId = null;
+    if (auth.authToken && auth.userId) {
+      try {
+        const now = new Date();
+        const title = 'Recording - ' + now.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) + ' ' + now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/recordings`, {
+          method: 'POST',
+          headers: {
+            'apikey': SUPABASE_ANON_KEY,
+            'Authorization': `Bearer ${auth.authToken}`,
+            'Content-Type': 'application/json',
+            'Prefer': 'return=representation',
+          },
+          body: JSON.stringify({
+            user_id: auth.userId,
+            title,
+            duration: 0,
+            file_size: 0,
+            mime_type: 'video/webm',
+            recording_mode: mode === 'camera-only' ? 'camera_only' : 'screen',
+            status: 'processing',
+          }),
+        });
+        if (res.ok) {
+          const [row] = await res.json();
+          recordingId = row.id;
+          lastRecordingId = recordingId;
+          await chrome.storage.session.set({ lastRecordingId: recordingId });
+        }
+      } catch (e) {
+        console.warn('Failed to create upfront recording row:', e);
+      }
+    }
+
+    await ensureRecorderTab();
 
     if (mode === 'tab') {
-      return await startTabRecording(tab, cameraId, micId);
+      return await startTabRecording(tab, cameraId, micId, recordingId, auth);
     } else if (mode === 'full-screen' || mode === 'window') {
-      return await startDesktopRecording(mode, tab, cameraId, micId);
+      return await startDesktopRecording(mode, tab, cameraId, micId, recordingId, auth);
     } else if (mode === 'camera-only') {
-      return await startCameraOnlyRecording(cameraId, micId);
+      return await startCameraOnlyRecording(cameraId, micId, recordingId, auth);
     }
 
     return { success: false, error: 'Unknown mode' };
@@ -184,7 +275,6 @@ async function injectBubbleAndToolbar(tabId, cameraId, elapsed, isPaused) {
         let currentSize = 'medium';
         let toolbarVisible = true;
 
-        // === Styles ===
         const style = document.createElement('style');
         style.textContent = `
           *{margin:0;padding:0;box-sizing:border-box;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;}
@@ -237,15 +327,12 @@ async function injectBubbleAndToolbar(tabId, cameraId, elapsed, isPaused) {
         `;
         shadow.appendChild(style);
 
-        // === Container (everything moves together) ===
         const container = document.createElement('div');
         container.className = 'container';
 
-        // === Toolbar ===
         const toolbar = document.createElement('div');
         toolbar.className = 'toolbar';
 
-        // Stop button
         const stopBtn = document.createElement('button');
         stopBtn.className = 'tb stop-btn';
         stopBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="3" width="10" height="10" rx="2"/></svg>';
@@ -256,14 +343,12 @@ async function injectBubbleAndToolbar(tabId, cameraId, elapsed, isPaused) {
         });
         toolbar.appendChild(stopBtn);
 
-        // Timer display
         const timerEl = document.createElement('div');
         timerEl.className = 'timer-display';
         function fmt(s) { const m = Math.floor(s / 60), sec = s % 60; return m + ':' + (sec < 10 ? '0' : '') + sec; }
         timerEl.textContent = fmt(elapsed);
         toolbar.appendChild(timerEl);
 
-        // Pause / Resume
         const pauseBtn = document.createElement('button');
         pauseBtn.className = 'tb';
         const pauseSvg = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="8" y1="5" x2="8" y2="19"/><line x1="16" y1="5" x2="16" y2="19"/></svg>';
@@ -280,12 +365,10 @@ async function injectBubbleAndToolbar(tabId, cameraId, elapsed, isPaused) {
         });
         toolbar.appendChild(pauseBtn);
 
-        // Divider
         const d1 = document.createElement('div');
         d1.className = 'divider';
         toolbar.appendChild(d1);
 
-        // Discard / Cancel
         const discardBtn = document.createElement('button');
         discardBtn.className = 'tb';
         discardBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
@@ -296,7 +379,6 @@ async function injectBubbleAndToolbar(tabId, cameraId, elapsed, isPaused) {
         });
         toolbar.appendChild(discardBtn);
 
-        // Close / hide toolbar
         const closeBtn = document.createElement('button');
         closeBtn.className = 'tb';
         closeBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
@@ -310,11 +392,9 @@ async function injectBubbleAndToolbar(tabId, cameraId, elapsed, isPaused) {
 
         container.appendChild(toolbar);
 
-        // === Webcam Bubble ===
         const bubbleWrap = document.createElement('div');
         bubbleWrap.className = 'bubble-wrap';
 
-        // Size controls (shown on hover)
         const szCtrl = document.createElement('div');
         szCtrl.className = 'sz';
         ['small', 'medium', 'large'].forEach(size => {
@@ -335,7 +415,6 @@ async function injectBubbleAndToolbar(tabId, cameraId, elapsed, isPaused) {
 
         const bubble = document.createElement('div');
         bubble.className = 'bubble';
-        // Click bubble to restore toolbar if hidden
         bubble.addEventListener('click', e => {
           if (!toolbarVisible) {
             e.stopPropagation();
@@ -344,7 +423,6 @@ async function injectBubbleAndToolbar(tabId, cameraId, elapsed, isPaused) {
           }
         });
 
-        // Use iframe for webcam (runs in extension's origin = always has camera permission)
         if (camId) {
           const iframe = document.createElement('iframe');
           iframe.src = chrome.runtime.getURL('camera/camera.html?d=' + encodeURIComponent(camId));
@@ -352,12 +430,10 @@ async function injectBubbleAndToolbar(tabId, cameraId, elapsed, isPaused) {
           iframe.allow = 'camera';
           bubble.appendChild(iframe);
         } else {
-          // No camera - just show empty circle
           bubble.style.background = '#333';
         }
         bubbleWrap.appendChild(bubble);
 
-        // Hide bubble section if no camera
         if (!camId) {
           bubbleWrap.style.display = 'none';
         }
@@ -365,7 +441,6 @@ async function injectBubbleAndToolbar(tabId, cameraId, elapsed, isPaused) {
         container.appendChild(bubbleWrap);
         shadow.appendChild(container);
 
-        // === Listen for messages from background ===
         const listener = (msg) => {
           if (msg.action === 'timerSync') {
             elapsed = msg.elapsed;
@@ -385,7 +460,6 @@ async function injectBubbleAndToolbar(tabId, cameraId, elapsed, isPaused) {
         chrome.runtime.onMessage.addListener(listener);
         window._screencastListener = listener;
 
-        // === Dragging (entire container moves together) ===
         let isDragging = false, offX = 0, offY = 0;
         container.addEventListener('mousedown', e => {
           if (e.target.closest('button')) return;
@@ -428,13 +502,11 @@ async function removeBubble(tabId) {
       func: () => {
         const host = document.getElementById('screencast-bubble-host');
         if (host) {
-          // Stop camera iframe by blanking its src
           const shadow = host.shadowRoot;
           if (shadow) {
             const iframe = shadow.querySelector('iframe');
             if (iframe) iframe.src = 'about:blank';
           }
-          // Stop direct stream if any
           if (host._stream) host._stream.getTracks().forEach(t => t.stop());
           host.remove();
         }
@@ -448,18 +520,25 @@ async function removeBubble(tabId) {
 }
 
 // === Tab Recording ===
-async function startTabRecording(tab, cameraId, micId) {
+async function startTabRecording(tab, cameraId, micId, recordingId, auth) {
   await injectBubbleAndToolbar(tab.id, cameraId, 0, false);
   bubbleTabId = tab.id;
 
-  const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tab.id });
+  // Use consumerTabId so the pinned recorder tab can consume the stream
+  const streamId = await chrome.tabCapture.getMediaStreamId({
+    targetTabId: tab.id,
+    consumerTabId: recorderTabId,
+  });
 
-  await forwardToOffscreen({
+  await forwardToRecorderTab({
     action: 'startRecording',
     mode: 'tab',
     tabCaptureStreamId: streamId,
     micId,
-    cameraId: null, // Camera already in tab DOM
+    cameraId: null,
+    recordingId,
+    userId: auth.userId,
+    authToken: auth.authToken,
   });
 
   startTimer();
@@ -468,7 +547,7 @@ async function startTabRecording(tab, cameraId, micId) {
 }
 
 // === Desktop/Window Recording ===
-async function startDesktopRecording(mode, tab, cameraId, micId) {
+async function startDesktopRecording(mode, tab, cameraId, micId, recordingId, auth) {
   await injectBubbleAndToolbar(tab.id, cameraId, 0, false);
   bubbleTabId = tab.id;
 
@@ -482,12 +561,15 @@ async function startDesktopRecording(mode, tab, cameraId, micId) {
         return;
       }
 
-      await forwardToOffscreen({
+      await forwardToRecorderTab({
         action: 'startRecording',
         mode: mode,
         desktopStreamId: streamId,
         cameraId,
         micId,
+        recordingId,
+        userId: auth.userId,
+        authToken: auth.authToken,
       });
 
       startTimer();
@@ -498,12 +580,15 @@ async function startDesktopRecording(mode, tab, cameraId, micId) {
 }
 
 // === Camera Only ===
-async function startCameraOnlyRecording(cameraId, micId) {
-  await forwardToOffscreen({
+async function startCameraOnlyRecording(cameraId, micId, recordingId, auth) {
+  await forwardToRecorderTab({
     action: 'startRecording',
     mode: 'camera-only',
     cameraId,
     micId,
+    recordingId,
+    userId: auth.userId,
+    authToken: auth.authToken,
   });
 
   startTimer();
@@ -522,21 +607,65 @@ async function handleStopRecording() {
     bubbleTabId = null;
   }
 
-  await ensureOffscreenDocument();
-  const stopResult = await forwardToOffscreen({ action: 'stopRecording' });
+  const stopResult = await forwardToRecorderTab({ action: 'stopRecording' });
   recordingState = 'stopped';
   currentCameraId = null;
 
-  // Auto-upload IMMEDIATELY — no setTimeout!
-  // The offscreen document has the blob in memory RIGHT NOW.
-  // Any delay risks Chrome closing the offscreen document and losing the blob.
-  autoUpload(savedElapsed, savedMode);
+  // If progressive upload succeeded, call assemble endpoint
+  if (stopResult?.progressiveUploadOk) {
+    assembleAndFinalize(savedElapsed, savedMode);
+  } else {
+    // Fallback: full blob upload (same as before)
+    autoUpload(savedElapsed, savedMode);
+  }
 
   return { success: true, elapsed: savedElapsed, blobSize: stopResult?.blobSize || 0 };
 }
 
-// === Auto Upload (triggered automatically on stop) ===
-// 3 attempts: immediate → recreate offscreen (load from IDB) → refresh auth token
+// === Assemble: Call server to concatenate progressively uploaded chunks ===
+async function assembleAndFinalize(duration, mode) {
+  const auth = await chrome.storage.local.get(['authToken', 'userId']);
+  if (!auth.authToken || !lastRecordingId) {
+    // Fallback to full blob upload
+    autoUpload(duration, mode);
+    return;
+  }
+
+  const now = new Date();
+  const title = 'Recording - ' + now.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) + ' ' + now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+
+  try {
+    const WEBAPP_URL = 'https://screencast-eight.vercel.app';
+    const res = await fetch(`${WEBAPP_URL}/api/recordings/${lastRecordingId}/assemble`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${auth.authToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ title, duration: duration || 0 }),
+    });
+
+    if (res.ok) {
+      recordingState = 'idle';
+      lastRecordingId = null;
+      await chrome.storage.session.remove(['lastRecordingId']);
+      // Clean up IDB + close recorder tab
+      await forwardToRecorderTab({ action: 'discardRecording' });
+      await closeRecorderTab();
+      chrome.runtime.sendMessage({ action: 'autoUploadComplete', recordingId: lastRecordingId }).catch(() => {});
+      return;
+    }
+
+    // Assembly failed — fallback to full blob upload
+    console.warn('Assembly failed, falling back to full blob upload');
+    autoUpload(duration, mode);
+  } catch (err) {
+    console.error('Assembly error:', err);
+    autoUpload(duration, mode);
+  }
+}
+
+// === Auto Upload (full blob — fallback when progressive upload fails) ===
 async function autoUpload(duration, mode) {
   const auth = await chrome.storage.local.get(['authToken', 'userId']);
   if (!auth.authToken || !auth.userId) {
@@ -549,21 +678,25 @@ async function autoUpload(duration, mode) {
 
   const uploadMsg = { action: 'uploadToWebApp', title, duration: duration || 0, mode: mode || 'tab' };
 
-  // Attempt 1: Upload immediately — offscreen alive, blob in memory
-  let result = await forwardToOffscreen(uploadMsg);
+  // Attempt 1: Upload immediately — recorder tab alive, blob in memory
+  let result = await forwardToRecorderTab(uploadMsg);
   if (result && result.success) {
     recordingState = 'idle';
+    lastRecordingId = null;
+    await chrome.storage.session.remove(['lastRecordingId']);
+    await closeRecorderTab();
     chrome.runtime.sendMessage({ action: 'autoUploadComplete', recordingId: result.recordingId }).catch(() => {});
     return;
   }
 
-  // Attempt 2: Offscreen may have died — recreate it. New offscreen loads from IDB.
-  await ensureOffscreenDocument();
-  // Small delay to let offscreen initialize
+  // Attempt 2: Recorder tab may have issues — wait and retry
   await new Promise(r => setTimeout(r, 300));
-  result = await forwardToOffscreen(uploadMsg);
+  result = await forwardToRecorderTab(uploadMsg);
   if (result && result.success) {
     recordingState = 'idle';
+    lastRecordingId = null;
+    await chrome.storage.session.remove(['lastRecordingId']);
+    await closeRecorderTab();
     chrome.runtime.sendMessage({ action: 'autoUploadComplete', recordingId: result.recordingId }).catch(() => {});
     return;
   }
@@ -571,10 +704,12 @@ async function autoUpload(duration, mode) {
   // Attempt 3: Auth token may be expired — refresh and retry
   if (result && result.error && !result.error.includes('No recording')) {
     await refreshAuthToken();
-    await ensureOffscreenDocument();
-    const retry = await forwardToOffscreen(uploadMsg);
+    const retry = await forwardToRecorderTab(uploadMsg);
     if (retry && retry.success) {
       recordingState = 'idle';
+      lastRecordingId = null;
+      await chrome.storage.session.remove(['lastRecordingId']);
+      await closeRecorderTab();
       chrome.runtime.sendMessage({ action: 'autoUploadComplete', recordingId: retry.recordingId }).catch(() => {});
       return;
     }
@@ -594,12 +729,28 @@ async function handleCancelRecording() {
     bubbleTabId = null;
   }
 
-  await ensureOffscreenDocument();
-  await forwardToOffscreen({ action: 'stopRecording' });
-  await forwardToOffscreen({ action: 'discardRecording' });
+  await forwardToRecorderTab({ action: 'stopRecording' });
+  await forwardToRecorderTab({ action: 'discardRecording' });
+
+  // Delete the upfront recording row if we created one
+  if (lastRecordingId) {
+    const auth = await chrome.storage.local.get(['authToken']);
+    if (auth.authToken) {
+      fetch(`${SUPABASE_URL}/rest/v1/recordings?id=eq.${lastRecordingId}`, {
+        method: 'DELETE',
+        headers: {
+          'apikey': SUPABASE_ANON_KEY,
+          'Authorization': `Bearer ${auth.authToken}`,
+        },
+      }).catch(() => {});
+    }
+    lastRecordingId = null;
+    await chrome.storage.session.remove(['lastRecordingId']);
+  }
+
   recordingState = 'idle';
   currentCameraId = null;
-  // Notify popup to go back to setup
+  await closeRecorderTab();
   chrome.runtime.sendMessage({ action: 'recordingCancelled' }).catch(() => {});
   return { success: true };
 }
@@ -607,9 +758,8 @@ async function handleCancelRecording() {
 // === Pause/Resume ===
 async function handlePauseRecording() {
   clearInterval(timerInterval);
-  await forwardToOffscreen({ action: 'pauseRecording' });
+  await forwardToRecorderTab({ action: 'pauseRecording' });
   recordingState = 'paused';
-  // Notify toolbar
   if (bubbleTabId) {
     chrome.tabs.sendMessage(bubbleTabId, { action: 'pauseStateChanged', paused: true }).catch(() => {});
   }
@@ -618,9 +768,8 @@ async function handlePauseRecording() {
 
 async function handleResumeRecording() {
   startTimer();
-  await forwardToOffscreen({ action: 'resumeRecording' });
+  await forwardToRecorderTab({ action: 'resumeRecording' });
   recordingState = 'recording';
-  // Notify toolbar
   if (bubbleTabId) {
     chrome.tabs.sendMessage(bubbleTabId, { action: 'pauseStateChanged', paused: false }).catch(() => {});
   }
@@ -632,41 +781,86 @@ function startTimer() {
   clearInterval(timerInterval);
   timerInterval = setInterval(() => {
     elapsedSeconds++;
-    // Sync to popup
     chrome.runtime.sendMessage({ action: 'timerSync', elapsed: elapsedSeconds }).catch(() => {});
-    // Sync to content script toolbar
     if (bubbleTabId) {
       chrome.tabs.sendMessage(bubbleTabId, { action: 'timerSync', elapsed: elapsedSeconds }).catch(() => {});
     }
-    // Keep offscreen alive
-    forwardToOffscreen({ action: 'keepAlive' }).catch(() => {});
     if (elapsedSeconds >= 3600) {
       handleStopRecording();
     }
   }, 1000);
 }
 
-// === Offscreen Document ===
-async function ensureOffscreenDocument() {
-  // Always check - don't cache, since Chrome can close offscreen documents
-  const existingContexts = await chrome.runtime.getContexts({
-    contextTypes: ['OFFSCREEN_DOCUMENT'],
-  });
-  if (existingContexts.length > 0) return;
+// === Recorder Tab Management (replaces offscreen document) ===
+async function ensureRecorderTab() {
+  // Check if recorder tab still exists
+  if (recorderTabId) {
+    try {
+      await chrome.tabs.get(recorderTabId);
+      if (recorderTabReady) return;
+      // Tab exists but might not be ready, wait for it
+      await waitForRecorderTab();
+      return;
+    } catch {
+      recorderTabId = null;
+      recorderTabReady = false;
+    }
+  }
 
-  await chrome.offscreen.createDocument({
-    url: 'offscreen/offscreen.html',
-    reasons: ['USER_MEDIA', 'DISPLAY_MEDIA', 'AUDIO_PLAYBACK'],
-    justification: 'Recording screen/camera/audio via MediaRecorder requires DOM access',
+  // Create new pinned tab
+  const tab = await chrome.tabs.create({
+    url: chrome.runtime.getURL('recorder/recorder.html'),
+    pinned: true,
+    active: false,
   });
+  recorderTabId = tab.id;
+  recorderTabReady = false;
+
+  await waitForRecorderTab();
 }
 
-async function forwardToOffscreen(msg) {
+async function waitForRecorderTab() {
+  // Wait for tab to fully load
+  for (let i = 0; i < 50; i++) {
+    try {
+      const tab = await chrome.tabs.get(recorderTabId);
+      if (tab.status === 'complete') {
+        // Small extra delay to ensure script is initialized
+        await new Promise(r => setTimeout(r, 200));
+        recorderTabReady = true;
+        return;
+      }
+    } catch {
+      throw new Error('Recorder tab was closed');
+    }
+    await new Promise(r => setTimeout(r, 100));
+  }
+  throw new Error('Recorder tab load timeout');
+}
+
+async function forwardToRecorderTab(msg) {
+  if (!recorderTabId) {
+    try {
+      await ensureRecorderTab();
+    } catch {
+      return { success: false, error: 'Recorder tab not available' };
+    }
+  }
   try {
-    return await chrome.runtime.sendMessage({ ...msg, target: 'offscreen' });
+    return await chrome.tabs.sendMessage(recorderTabId, { ...msg, target: 'recorder' });
   } catch (err) {
-    console.error('Failed to forward to offscreen:', err);
+    console.error('Failed to forward to recorder tab:', err);
     return { success: false, error: err.message };
+  }
+}
+
+async function closeRecorderTab() {
+  if (recorderTabId) {
+    try {
+      await chrome.tabs.remove(recorderTabId);
+    } catch {}
+    recorderTabId = null;
+    recorderTabReady = false;
   }
 }
 
@@ -675,9 +869,6 @@ async function refreshAuthToken() {
   try {
     const stored = await chrome.storage.local.get(['refreshToken']);
     if (!stored.refreshToken) return;
-
-    const SUPABASE_URL = 'https://bgsvuywxejpmkstgqizq.supabase.co';
-    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJnc3Z1eXd4ZWpwbWtzdGdxaXpxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE2MDc0MzMsImV4cCI6MjA4NzE4MzQzM30.EvHOy5sBbXzSxjRS5vPGzm8cnFrOXxDfclP-ru3VU_M';
 
     const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
       method: 'POST',

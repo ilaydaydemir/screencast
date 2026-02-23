@@ -1,13 +1,12 @@
 {
   "manifest_version": 3,
   "name": "Screencast Recorder",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Record your screen with webcam overlay. Like Loom, in your browser.",
   "permissions": [
     "tabs",
     "tabCapture",
     "desktopCapture",
-    "offscreen",
     "activeTab",
     "storage",
     "scripting"
@@ -33,7 +32,12 @@
     "128": "icons/icon128.png"
   },
   "web_accessible_resources": [{
-    "resources": ["camera/camera.html", "camera/camera.js"],
+    "resources": [
+      "camera/camera.html",
+      "camera/camera.js",
+      "recorder/recorder.html",
+      "recorder/recorder.js"
+    ],
     "matches": ["<all_urls>"]
   }]
 }

@@ -1,7 +1,9 @@
-// Screencast - Offscreen Recording Engine
-// Handles MediaRecorder, canvas compositing, audio mixing, download, and upload
+// Screencast - Recorder Tab Engine (replaces offscreen.js)
+// Runs in a pinned tab — Chrome never kills visible tabs.
+// Handles MediaRecorder, canvas compositing, audio mixing, download, upload,
+// and progressive chunk upload to Supabase Storage.
 
-// === Constants (matching web app) ===
+// === Constants ===
 const VIDEO_FRAME_RATE = 30;
 const VIDEO_BITS_PER_SECOND = 2_500_000;
 const SUPPORTED_MIME_TYPES = [
@@ -13,6 +15,7 @@ const SUPPORTED_MIME_TYPES = [
 ];
 const SUPABASE_URL = 'https://bgsvuywxejpmkstgqizq.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJnc3Z1eXd4ZWpwbWtzdGdxaXpxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE2MDc0MzMsImV4cCI6MjA4NzE4MzQzM30.EvHOy5sBbXzSxjRS5vPGzm8cnFrOXxDfclP-ru3VU_M';
+const UPLOAD_BATCH_SIZE = 5;
 
 // === State ===
 let mediaRecorder = null;
@@ -23,20 +26,30 @@ let webcamStream = null;
 let micStream = null;
 let audioContext = null;
 let rafId = null;
-let keepAliveCtx = null;
 let currentMimeType = 'video/webm';
 let chunkIndex = 0;
+let currentRecordingId = null;
+let currentUserId = null;
+let currentAuthToken = null;
+
+// === Progressive Upload State ===
+let uploadQueue = [];       // chunks waiting to be uploaded
+let uploadedCount = 0;      // number of chunks successfully uploaded to server
+let uploadFailed = false;   // if true, skip progressive upload, fall back to full blob
+let isUploading = false;    // prevent concurrent flush operations
+
+// === Port connection to service worker (keeps SW alive) ===
+let swPort = null;
+function connectPort() {
+  swPort = chrome.runtime.connect({ name: 'recorder' });
+  swPort.onDisconnect.addListener(() => {
+    // Reconnect if disconnected (e.g., SW restarts)
+    setTimeout(connectPort, 1000);
+  });
+}
+connectPort();
 
 // === IndexedDB: Fresh connection per operation ===
-// Each operation opens its own IDB connection. This eliminates the single
-// point of failure where a persistent connection fails and all saves become no-ops.
-//
-// Schema ('blobs' store):
-//   'recording'  → final complete Blob (saved on stop)
-//   'chunk-0', 'chunk-1', ... → individual chunks (saved every second during recording)
-//   'chunk-meta' → { count: N, mimeType: string }
-
-// Save a single chunk — called every second during recording
 function saveChunkToIDB(index, chunk, mimeType) {
   return new Promise((resolve) => {
     try {
@@ -76,7 +89,6 @@ function saveChunkToIDB(index, chunk, mimeType) {
   });
 }
 
-// Save the final complete blob
 function saveFinalBlobToIDB(blob) {
   return new Promise((resolve) => {
     try {
@@ -100,7 +112,6 @@ function saveFinalBlobToIDB(blob) {
   });
 }
 
-// Clear all data (new recording or discard)
 function clearIDB() {
   return new Promise((resolve) => {
     try {
@@ -124,7 +135,6 @@ function clearIDB() {
   });
 }
 
-// Read a key (used by loadRecording)
 function idbGet(key) {
   return new Promise((resolve) => {
     try {
@@ -144,7 +154,6 @@ function idbGet(key) {
   });
 }
 
-// Reconstruct recording from individual chunks saved during recording
 async function reconstructFromChunks() {
   const meta = await idbGet('chunk-meta');
   console.log('[Screencast] chunk-meta:', meta);
@@ -162,7 +171,6 @@ async function reconstructFromChunks() {
   return new Blob(parts, { type: meta.mimeType || 'video/webm' });
 }
 
-// Try all sources: memory → IDB final blob → reconstruct from IDB chunks
 async function loadRecording() {
   if (recordedBlob) {
     console.log('[Screencast] loadRecording: from memory');
@@ -187,29 +195,61 @@ async function loadRecording() {
   return null;
 }
 
-// === Keep Alive: play near-silent audio to prevent Chrome from closing offscreen ===
-function startKeepAlive() {
-  if (keepAliveCtx) return;
-  keepAliveCtx = new AudioContext();
-  const oscillator = keepAliveCtx.createOscillator();
-  oscillator.frequency.value = 1; // 1 Hz — inaudible
-  const gain = keepAliveCtx.createGain();
-  gain.gain.value = 0.01; // Low but detectable by Chrome as active audio
-  oscillator.connect(gain);
-  gain.connect(keepAliveCtx.destination);
-  oscillator.start();
-}
+// === Progressive Chunk Upload ===
+async function flushUploadQueue() {
+  if (isUploading || uploadFailed || !currentRecordingId || !currentUserId || !currentAuthToken) return;
+  if (uploadQueue.length === 0) return;
 
-function stopKeepAlive() {
-  if (keepAliveCtx) {
-    keepAliveCtx.close().catch(() => {});
-    keepAliveCtx = null;
+  isUploading = true;
+  const batch = uploadQueue.splice(0, UPLOAD_BATCH_SIZE);
+
+  for (const item of batch) {
+    const chunkName = `chunk-${String(item.index).padStart(6, '0')}.webm`;
+    const path = `${currentUserId}/${currentRecordingId}/chunks/${chunkName}`;
+
+    try {
+      const res = await fetch(`${SUPABASE_URL}/storage/v1/object/recordings/${path}`, {
+        method: 'POST',
+        headers: {
+          'apikey': SUPABASE_ANON_KEY,
+          'Authorization': `Bearer ${currentAuthToken}`,
+          'Content-Type': 'video/webm',
+        },
+        body: item.data,
+      });
+
+      if (!res.ok) {
+        const errBody = await res.text().catch(() => '');
+        console.error(`[Screencast] Chunk upload failed (${res.status}): ${errBody}`);
+        // Put failed items back and mark upload as failed
+        uploadQueue.unshift(...batch.filter(b => b.index >= item.index));
+        uploadFailed = true;
+        isUploading = false;
+        return;
+      }
+
+      uploadedCount++;
+      console.log(`[Screencast] Uploaded chunk ${item.index} → ${path}`);
+    } catch (err) {
+      console.error(`[Screencast] Chunk upload error:`, err);
+      uploadQueue.unshift(...batch.filter(b => b.index >= item.index));
+      uploadFailed = true;
+      isUploading = false;
+      return;
+    }
+  }
+
+  isUploading = false;
+
+  // If more chunks queued while we were uploading, flush again
+  if (uploadQueue.length >= UPLOAD_BATCH_SIZE) {
+    flushUploadQueue();
   }
 }
 
 // === Message Handler ===
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.target !== 'offscreen') return false;
+  if (message.target !== 'recorder') return false;
 
   switch (message.action) {
     case 'startRecording':
@@ -240,10 +280,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     case 'discardRecording':
       cleanup();
-      stopKeepAlive();
       recordedBlob = null;
       chunks = [];
       chunkIndex = 0;
+      uploadQueue = [];
+      uploadedCount = 0;
+      uploadFailed = false;
+      currentRecordingId = null;
       clearIDB();
       sendResponse({ success: true });
       return false;
@@ -253,16 +296,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
 
     case 'keepAlive':
-      // Just respond to keep the offscreen document alive
       sendResponse({ alive: true, hasRecording: !!mediaRecorder, hasBlob: !!recordedBlob });
       return false;
   }
 });
 
-// === Device Enumeration (runs in offscreen where getUserMedia works) ===
+// === Device Enumeration ===
 async function handleEnumerateDevices() {
   try {
-    // Request permission to get labels and deviceIds
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       stream.getTracks().forEach(t => t.stop());
@@ -299,10 +340,15 @@ function getSupportedMimeType() {
 }
 
 // === Start Recording ===
-async function handleStart({ mode, tabCaptureStreamId, desktopStreamId, cameraId, micId, recordingId }) {
+async function handleStart({ mode, tabCaptureStreamId, desktopStreamId, cameraId, micId, recordingId, userId, authToken }) {
   chunks = [];
   recordedBlob = null;
+  uploadQueue = [];
+  uploadedCount = 0;
+  uploadFailed = false;
   currentRecordingId = recordingId || null;
+  currentUserId = userId || null;
+  currentAuthToken = authToken || null;
 
   if (mode === 'tab') {
     await startTabMode(tabCaptureStreamId, micId);
@@ -317,7 +363,6 @@ async function handleStart({ mode, tabCaptureStreamId, desktopStreamId, cameraId
 
 // === Tab Mode ===
 async function startTabMode(streamId, micId) {
-  // Get tab capture stream from streamId
   screenStream = await navigator.mediaDevices.getUserMedia({
     audio: {
       mandatory: {
@@ -334,11 +379,8 @@ async function startTabMode(streamId, micId) {
   });
 
   const compositeStream = new MediaStream();
-
-  // Video from tab (includes the injected webcam bubble)
   screenStream.getVideoTracks().forEach(t => compositeStream.addTrack(t));
 
-  // Mix audio: tab audio + mic
   audioContext = new AudioContext();
   const destination = audioContext.createMediaStreamDestination();
 
@@ -358,7 +400,6 @@ async function startTabMode(streamId, micId) {
   }
 
   destination.stream.getAudioTracks().forEach(t => compositeStream.addTrack(t));
-
   await startMediaRecorder(compositeStream);
 }
 
@@ -383,7 +424,6 @@ async function startDesktopMode(streamId, cameraId, micId) {
   screenVideo.srcObject = screenStream;
   await screenVideo.play();
 
-  // Webcam for overlay
   const webcamVideo = document.getElementById('webcam-video');
   if (cameraId) {
     webcamStream = await navigator.mediaDevices.getUserMedia({
@@ -393,7 +433,6 @@ async function startDesktopMode(streamId, cameraId, micId) {
     await webcamVideo.play();
   }
 
-  // Canvas compositing
   const canvas = document.getElementById('composite-canvas');
   const videoTrack = screenStream.getVideoTracks()[0];
   const settings = videoTrack?.getSettings();
@@ -437,12 +476,10 @@ async function startDesktopMode(streamId, cameraId, micId) {
   }
   drawFrame();
 
-  // Composite stream
   const canvasStream = canvas.captureStream(VIDEO_FRAME_RATE);
   const compositeStream = new MediaStream();
   canvasStream.getVideoTracks().forEach(t => compositeStream.addTrack(t));
 
-  // Audio mixing
   audioContext = new AudioContext();
   const destination = audioContext.createMediaStreamDestination();
 
@@ -462,7 +499,6 @@ async function startDesktopMode(streamId, cameraId, micId) {
   }
 
   destination.stream.getAudioTracks().forEach(t => compositeStream.addTrack(t));
-
   await startMediaRecorder(compositeStream);
 }
 
@@ -480,16 +516,13 @@ async function startCameraOnlyMode(cameraId, micId) {
 let stopResolve = null;
 
 async function startMediaRecorder(stream) {
-  startKeepAlive();
-
   const mimeType = getSupportedMimeType();
   currentMimeType = mimeType;
   chunkIndex = 0;
 
-  // Clear old data from IDB (fresh connection)
   await clearIDB();
 
-  // Verify IDB works by doing a test write
+  // Verify IDB works
   try {
     await new Promise((resolve, reject) => {
       const req = indexedDB.open('screencast', 1);
@@ -503,7 +536,7 @@ async function startMediaRecorder(stream) {
       };
       req.onerror = () => reject(new Error('IDB open failed'));
     });
-    console.log('[Screencast] IDB test write OK — chunk saving will work');
+    console.log('[Screencast] IDB test write OK');
   } catch (idbErr) {
     console.error('[Screencast] IDB NOT WORKING:', idbErr);
   }
@@ -516,9 +549,20 @@ async function startMediaRecorder(stream) {
   mediaRecorder.ondataavailable = (e) => {
     if (e.data.size > 0) {
       chunks.push(e.data);
-      // Save EVERY chunk to IDB — each opens its own fresh connection
       const idx = chunkIndex++;
+
+      // Save to IDB (safety net)
       saveChunkToIDB(idx, e.data, mimeType);
+
+      // Add to progressive upload queue
+      if (!uploadFailed && currentRecordingId) {
+        uploadQueue.push({ index: idx, data: e.data });
+
+        // Flush every UPLOAD_BATCH_SIZE chunks
+        if (uploadQueue.length >= UPLOAD_BATCH_SIZE) {
+          flushUploadQueue();
+        }
+      }
     }
   };
 
@@ -527,23 +571,36 @@ async function startMediaRecorder(stream) {
     const blobSize = recordedBlob.size;
     console.log(`[Screencast] Recording stopped: ${blobSize} bytes, ${chunks.length} chunks`);
 
-    // Save complete blob to IDB for fast access
     try { await saveFinalBlobToIDB(recordedBlob); } catch (e) {
       console.error('[Screencast] saveFinalBlobToIDB failed:', e);
+    }
+
+    // Flush remaining upload queue
+    if (!uploadFailed && currentRecordingId && uploadQueue.length > 0) {
+      await flushUploadQueue();
     }
 
     cleanup();
     chrome.runtime.sendMessage({
       action: 'recordingStopped',
       blobSize,
+      progressiveUploadOk: !uploadFailed && currentRecordingId && uploadedCount > 0,
+      uploadedChunks: uploadedCount,
+      totalChunks: chunkIndex,
     }).catch(() => {});
     if (stopResolve) {
-      stopResolve({ success: true, blobSize });
+      stopResolve({
+        success: true,
+        blobSize,
+        progressiveUploadOk: !uploadFailed && currentRecordingId && uploadedCount > 0,
+        uploadedChunks: uploadedCount,
+        totalChunks: chunkIndex,
+      });
       stopResolve = null;
     }
   };
 
-  console.log(`[Screencast] MediaRecorder started (${mimeType}), saving each chunk to IDB`);
+  console.log(`[Screencast] MediaRecorder started (${mimeType}), progressive upload ${currentRecordingId ? 'enabled' : 'disabled'}`);
   mediaRecorder.start(1000);
 }
 
@@ -571,15 +628,13 @@ async function handleDownload(title) {
   URL.revokeObjectURL(url);
 }
 
-// === Upload to Supabase ===
+// === Upload to Supabase (full blob — fallback when progressive upload fails) ===
 async function handleUpload({ title, duration, mode }) {
-  // Try all sources: memory → IDB final blob → reconstruct from IDB chunks
   const blob = await loadRecording();
   if (!blob) return { success: false, error: 'No recording found in memory or IDB' };
   recordedBlob = blob;
   console.log(`[Screencast] Upload starting: ${blob.size} bytes`);
 
-  // Get auth from web app
   const auth = await getWebAppAuth();
   if (!auth) {
     return { success: false, error: 'Not logged in. Please sign in at screencast-eight.vercel.app first.' };
@@ -592,31 +647,47 @@ async function handleUpload({ title, duration, mode }) {
   };
 
   try {
-    // 1. Insert recording row
     sendProgress(10);
-    const insertRes = await fetch(`${SUPABASE_URL}/rest/v1/recordings`, {
-      method: 'POST',
-      headers: { ...headers, 'Prefer': 'return=representation' },
-      body: JSON.stringify({
-        user_id: auth.userId,
-        title: title || 'Untitled Recording',
-        duration: duration || 0,
-        file_size: recordedBlob.size,
-        mime_type: recordedBlob.type || 'video/webm',
-        recording_mode: mode === 'camera-only' ? 'camera_only' : 'screen',
-        status: 'processing',
-      }),
-    });
 
-    if (!insertRes.ok) {
-      const errBody = await insertRes.text().catch(() => '');
-      throw new Error(`DB insert failed (${insertRes.status}): ${errBody}`);
+    // Use existing recording row if we have one, otherwise create new
+    let recordingId = currentRecordingId;
+    if (!recordingId) {
+      const insertRes = await fetch(`${SUPABASE_URL}/rest/v1/recordings`, {
+        method: 'POST',
+        headers: { ...headers, 'Prefer': 'return=representation' },
+        body: JSON.stringify({
+          user_id: auth.userId,
+          title: title || 'Untitled Recording',
+          duration: duration || 0,
+          file_size: recordedBlob.size,
+          mime_type: recordedBlob.type || 'video/webm',
+          recording_mode: mode === 'camera-only' ? 'camera_only' : 'screen',
+          status: 'processing',
+        }),
+      });
+
+      if (!insertRes.ok) {
+        const errBody = await insertRes.text().catch(() => '');
+        throw new Error(`DB insert failed (${insertRes.status}): ${errBody}`);
+      }
+      const [recording] = await insertRes.json();
+      recordingId = recording.id;
+    } else {
+      // Update existing row with title/duration/file_size
+      await fetch(`${SUPABASE_URL}/rest/v1/recordings?id=eq.${recordingId}`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({
+          title: title || 'Untitled Recording',
+          duration: duration || 0,
+          file_size: recordedBlob.size,
+        }),
+      });
     }
-    const [recording] = await insertRes.json();
     sendProgress(20);
 
-    // 2. Upload video
-    const videoPath = `${auth.userId}/${recording.id}.webm`;
+    // Upload video
+    const videoPath = `${auth.userId}/${recordingId}.webm`;
     const uploadRes = await fetch(`${SUPABASE_URL}/storage/v1/object/recordings/${videoPath}`, {
       method: 'POST',
       headers: {
@@ -633,12 +704,12 @@ async function handleUpload({ title, duration, mode }) {
     }
     sendProgress(70);
 
-    // 3. Generate + upload thumbnail
+    // Generate + upload thumbnail
     let thumbnailPath = null;
     try {
       const thumbBlob = await generateThumbnail(recordedBlob);
       if (thumbBlob) {
-        thumbnailPath = `${auth.userId}/${recording.id}-thumb.png`;
+        thumbnailPath = `${auth.userId}/${recordingId}-thumb.png`;
         await fetch(`${SUPABASE_URL}/storage/v1/object/recordings/${thumbnailPath}`, {
           method: 'POST',
           headers: {
@@ -652,8 +723,8 @@ async function handleUpload({ title, duration, mode }) {
     } catch { /* thumbnail optional */ }
     sendProgress(85);
 
-    // 4. Update recording status
-    await fetch(`${SUPABASE_URL}/rest/v1/recordings?id=eq.${recording.id}`, {
+    // Update recording status
+    await fetch(`${SUPABASE_URL}/rest/v1/recordings?id=eq.${recordingId}`, {
       method: 'PATCH',
       headers,
       body: JSON.stringify({
@@ -664,19 +735,19 @@ async function handleUpload({ title, duration, mode }) {
     });
 
     sendProgress(100);
-    stopKeepAlive();
     recordedBlob = null;
     chunks = [];
+    uploadQueue = [];
+    currentRecordingId = null;
     clearIDB();
-    return { success: true, recordingId: recording.id };
+    return { success: true, recordingId };
   } catch (err) {
     return { success: false, error: err.message };
   }
 }
 
-// === Auth: Read from web app ===
+// === Auth ===
 async function getWebAppAuth() {
-  // Check stored auth first
   const stored = await chrome.storage.local.get(['authToken', 'userId']);
   if (stored.authToken && stored.userId) {
     return { accessToken: stored.authToken, userId: stored.userId };
@@ -714,8 +785,6 @@ function sendProgress(progress) {
 }
 
 function cleanup() {
-  // NOTE: Do NOT call stopKeepAlive() here - we need the offscreen document
-  // alive for download/upload after recording stops. It's stopped on discard.
   if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
   if (screenStream) { screenStream.getTracks().forEach(t => t.stop()); screenStream = null; }
   if (webcamStream) { webcamStream.getTracks().forEach(t => t.stop()); webcamStream = null; }

@@ -240,7 +240,7 @@ function showAuthError(msg) {
   authError.style.display = 'block';
 }
 
-// === Device Enumeration (via offscreen document) ===
+// === Device Enumeration (via recorder tab) ===
 async function enumerateDevices() {
   try {
     const result = await sendMessage({ action: 'enumerateDevices' });
@@ -440,11 +440,11 @@ async function stopRecording() {
   }
 }
 
-// === Download (IDB direct → offscreen fallback) ===
+// === Download (IDB direct → recorder tab fallback) ===
 async function downloadRecording() {
   const title = titleInput.value || generateTitle();
 
-  // Try direct download from OPFS/IDB (works even if offscreen is closed)
+  // Try direct download from IDB (works even if recorder tab is closed)
   const blob = await loadRecordingBlob();
   if (blob) {
     const url = URL.createObjectURL(blob);
@@ -458,10 +458,10 @@ async function downloadRecording() {
     return;
   }
 
-  // Fallback: ask offscreen document
+  // Fallback: ask recorder tab
   const result = await sendMessage({ action: 'downloadRecording', title });
   if (!result || !result.success) {
-    alert('No recording found in IDB. Check chrome://extensions → offscreen console for [Screencast IDB] logs.');
+    alert('No recording found. The recording data may have been lost.');
   }
 }
 
@@ -543,6 +543,53 @@ chrome.runtime.onMessage.addListener((message) => {
     startBtn.textContent = 'Start Recording';
     enumerateDevices();
   }
+  if (message.action === 'recorderTabClosed') {
+    // Recording was interrupted — show recovery UI
+    clearInterval(timerInterval);
+    showView('done');
+    recordingInfo.textContent = 'Recording interrupted — tab was closed.';
+    titleInput.style.display = '';
+    titleInput.value = generateTitle();
+    downloadBtn.parentElement.style.display = '';
+    discardBtn.style.display = '';
+    // Add recover button if not already present
+    if (!document.getElementById('recover-btn')) {
+      const recoverBtn = document.createElement('button');
+      recoverBtn.id = 'recover-btn';
+      recoverBtn.textContent = 'Recover & Upload';
+      recoverBtn.style.cssText = 'width:100%;padding:12px;background:#22c55e;color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;margin-top:8px;';
+      recoverBtn.addEventListener('click', async () => {
+        recoverBtn.disabled = true;
+        recoverBtn.textContent = 'Recovering...';
+        const blob = await loadRecordingBlob();
+        if (!blob) {
+          alert('No recording data found in IDB for recovery.');
+          recoverBtn.disabled = false;
+          recoverBtn.textContent = 'Recover & Upload';
+          return;
+        }
+        // Upload via background (will create recorder tab if needed)
+        const response = await sendMessage({
+          action: 'uploadToWebApp',
+          title: titleInput.value || 'Recovered Recording',
+          duration: elapsedSeconds,
+          mode: currentMode,
+        });
+        if (response && response.success) {
+          recordingInfo.textContent = 'Recovered! Opening dashboard...';
+          setTimeout(() => {
+            chrome.tabs.create({ url: 'https://screencast-eight.vercel.app/dashboard' });
+            window.close();
+          }, 1000);
+        } else {
+          recoverBtn.disabled = false;
+          recoverBtn.textContent = 'Recover & Upload';
+          alert(response?.error || 'Recovery upload failed. Try Download instead.');
+        }
+      });
+      discardBtn.parentNode.insertBefore(recoverBtn, discardBtn);
+    }
+  }
 });
 
 // === Helpers ===
@@ -579,7 +626,7 @@ function generateTitle() {
     + ' ' + now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
 }
 
-// === Direct IDB access — works even if offscreen document is closed ===
+// === Direct IDB access — works even if recorder tab is closed ===
 
 function idbGet(key) {
   return new Promise((resolve) => {
