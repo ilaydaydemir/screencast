@@ -286,6 +286,8 @@ async function startCameraOnlyMode(cameraId, micId) {
 }
 
 // === MediaRecorder ===
+let stopResolve = null;
+
 function startMediaRecorder(stream) {
   const mimeType = getSupportedMimeType();
   mediaRecorder = new MediaRecorder(stream, {
@@ -299,11 +301,17 @@ function startMediaRecorder(stream) {
 
   mediaRecorder.onstop = () => {
     recordedBlob = new Blob(chunks, { type: mimeType });
+    const blobSize = recordedBlob.size;
     cleanup();
     chrome.runtime.sendMessage({
       action: 'recordingStopped',
-      blobSize: recordedBlob.size,
+      blobSize,
     }).catch(() => {});
+    // Resolve the stop promise if someone is waiting
+    if (stopResolve) {
+      stopResolve({ success: true, blobSize });
+      stopResolve = null;
+    }
   };
 
   mediaRecorder.start(1000);
@@ -316,12 +324,7 @@ function handleStop() {
       resolve({ success: true, blobSize: recordedBlob?.size || 0 });
       return;
     }
-    // Wait for onstop to fire (blob is created there) before resolving
-    const origOnStop = mediaRecorder.onstop;
-    mediaRecorder.onstop = (e) => {
-      if (origOnStop) origOnStop(e);
-      resolve({ success: true, blobSize: recordedBlob?.size || 0 });
-    };
+    stopResolve = resolve;
     mediaRecorder.stop();
   });
 }
