@@ -71,8 +71,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     elapsedSeconds = state.elapsed || 0;
     showView('done');
     if (state.uploadError) {
-      // Upload already failed — show manual controls
-      recordingInfo.textContent = 'Upload failed: ' + state.uploadError;
+      // Upload already failed — show manual controls with auto-generated title
+      recordingInfo.textContent = 'Upload failed. Download your recording below.';
+      titleInput.value = generateTitle();
     } else {
       // Auto-upload is in progress
       recordingInfo.textContent = 'Saving to Screencast...';
@@ -439,10 +440,27 @@ async function stopRecording() {
   }
 }
 
-// === Download ===
+// === Download (direct IDB → offscreen fallback) ===
 async function downloadRecording() {
-  const title = titleInput.value || 'recording';
+  const title = titleInput.value || generateTitle();
+
+  // Try direct IDB download first (works even if offscreen is closed)
+  const blob = await loadBlobFromIDB();
+  if (blob) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${title}.webm`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    return;
+  }
+
+  // Fallback: ask offscreen document
   await sendMessage({ action: 'downloadRecording', title });
+  alert('No recording found. The recording may have been lost.');
 }
 
 // === Upload ===
@@ -510,8 +528,9 @@ chrome.runtime.onMessage.addListener((message) => {
   }
   if (message.action === 'autoUploadFailed') {
     // Show manual controls so user can download or retry
-    recordingInfo.textContent = `${formatTime(elapsedSeconds)} recorded`;
+    recordingInfo.textContent = `Upload failed. Download your recording below.`;
     titleInput.style.display = '';
+    titleInput.value = generateTitle();
     downloadBtn.parentElement.style.display = '';
     discardBtn.style.display = '';
   }
@@ -550,6 +569,28 @@ async function sendMessage(msg) {
     console.error('Message failed:', err);
     return null;
   }
+}
+
+function generateTitle() {
+  const now = new Date();
+  return 'Recording - ' + now.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+    + ' ' + now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+}
+
+// Direct IDB access — works even if offscreen document is closed
+function loadBlobFromIDB() {
+  return new Promise((resolve) => {
+    const req = indexedDB.open('screencast', 1);
+    req.onupgradeneeded = (e) => { e.target.result.createObjectStore('blobs'); };
+    req.onsuccess = (e) => {
+      const db = e.target.result;
+      const tx = db.transaction('blobs', 'readonly');
+      const getReq = tx.objectStore('blobs').get('recording');
+      getReq.onsuccess = () => { db.close(); resolve(getReq.result || null); };
+      getReq.onerror = () => { db.close(); resolve(null); };
+    };
+    req.onerror = () => resolve(null);
+  });
 }
 
 // === Auth Sync: Read Supabase token from web app ===

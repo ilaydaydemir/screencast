@@ -519,15 +519,18 @@ async function handleStopRecording() {
   recordingState = 'stopped';
   currentCameraId = null;
 
-  // Auto-upload to web app (like Loom - saves automatically on stop)
-  setTimeout(() => autoUpload(savedElapsed, savedMode), 1000);
+  // Auto-upload IMMEDIATELY — no setTimeout!
+  // The offscreen document has the blob in memory RIGHT NOW.
+  // Any delay risks Chrome closing the offscreen document and losing the blob.
+  autoUpload(savedElapsed, savedMode);
 
   return { success: true, elapsed: savedElapsed, blobSize: stopResult?.blobSize || 0 };
 }
 
 // === Auto Upload (triggered automatically on stop) ===
 async function autoUpload(duration, mode) {
-  await refreshAuthToken();
+  // Don't refresh token first — go straight to upload while blob is in memory.
+  // If auth fails, we'll retry with refreshed token.
   const auth = await chrome.storage.local.get(['authToken', 'userId']);
   if (!auth.authToken || !auth.userId) {
     chrome.runtime.sendMessage({ action: 'autoUploadFailed', error: 'Not signed in' }).catch(() => {});
@@ -537,7 +540,7 @@ async function autoUpload(duration, mode) {
   const now = new Date();
   const title = 'Recording - ' + now.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) + ' ' + now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
 
-  await ensureOffscreenDocument();
+  // Upload immediately — offscreen document is alive, blob is in memory
   const result = await forwardToOffscreen({
     action: 'uploadToWebApp',
     title,
@@ -548,10 +551,29 @@ async function autoUpload(duration, mode) {
   if (result && result.success) {
     recordingState = 'idle';
     chrome.runtime.sendMessage({ action: 'autoUploadComplete', recordingId: result.recordingId }).catch(() => {});
+    return;
+  }
+
+  // If auth expired, refresh token and retry once
+  if (result && result.error && result.error.includes('401')) {
+    await refreshAuthToken();
+    await ensureOffscreenDocument();
+    const retry = await forwardToOffscreen({
+      action: 'uploadToWebApp',
+      title,
+      duration: duration || 0,
+      mode: mode || 'tab',
+    });
+    if (retry && retry.success) {
+      recordingState = 'idle';
+      chrome.runtime.sendMessage({ action: 'autoUploadComplete', recordingId: retry.recordingId }).catch(() => {});
+      return;
+    }
+    uploadError = retry?.error || 'Upload failed after token refresh';
   } else {
     uploadError = result?.error || 'Upload failed';
-    chrome.runtime.sendMessage({ action: 'autoUploadFailed', error: uploadError }).catch(() => {});
   }
+  chrome.runtime.sendMessage({ action: 'autoUploadFailed', error: uploadError }).catch(() => {});
 }
 
 // === Cancel Recording (stop + discard, used by toolbar discard button) ===
