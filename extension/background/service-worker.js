@@ -611,13 +611,21 @@ async function handleStopRecording() {
   recordingState = 'stopped';
   currentCameraId = null;
 
-  // If progressive upload succeeded, call assemble endpoint
-  if (stopResult?.progressiveUploadOk) {
-    assembleAndFinalize(savedElapsed, savedMode);
-  } else {
-    // Fallback: full blob upload (same as before)
-    autoUpload(savedElapsed, savedMode);
-  }
+  // Fire-and-forget upload — wrapped with error handler so failures always
+  // report back to the popup instead of silently dying.
+  const uploadWithErrorHandler = async () => {
+    try {
+      if (stopResult?.progressiveUploadOk) {
+        await assembleAndFinalize(savedElapsed, savedMode);
+      } else {
+        await autoUpload(savedElapsed, savedMode);
+      }
+    } catch (err) {
+      uploadError = err.message || 'Upload failed unexpectedly';
+      chrome.runtime.sendMessage({ action: 'autoUploadFailed', error: uploadError }).catch(() => {});
+    }
+  };
+  uploadWithErrorHandler();
 
   return { success: true, elapsed: savedElapsed, blobSize: stopResult?.blobSize || 0 };
 }
@@ -627,7 +635,7 @@ async function assembleAndFinalize(duration, mode) {
   const auth = await chrome.storage.local.get(['authToken', 'userId']);
   if (!auth.authToken || !lastRecordingId) {
     // Fallback to full blob upload
-    autoUpload(duration, mode);
+    await autoUpload(duration, mode);
     return;
   }
 
@@ -659,10 +667,10 @@ async function assembleAndFinalize(duration, mode) {
 
     // Assembly failed — fallback to full blob upload
     console.warn('Assembly failed, falling back to full blob upload');
-    autoUpload(duration, mode);
+    await autoUpload(duration, mode);
   } catch (err) {
     console.error('Assembly error:', err);
-    autoUpload(duration, mode);
+    await autoUpload(duration, mode);
   }
 }
 

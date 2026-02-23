@@ -75,11 +75,20 @@ document.addEventListener('DOMContentLoaded', async () => {
       recordingInfo.textContent = 'Upload error: ' + state.uploadError;
       titleInput.value = generateTitle();
     } else {
-      // Auto-upload is in progress
+      // Auto-upload is in progress — but show manual controls after 5s in case it's stuck
       recordingInfo.textContent = 'Saving to Screencast...';
       titleInput.style.display = 'none';
       downloadBtn.parentElement.style.display = 'none';
       discardBtn.style.display = 'none';
+      setTimeout(() => {
+        if (recordingInfo.textContent === 'Saving to Screencast...') {
+          recordingInfo.textContent = 'Upload may have failed. Use controls below.';
+          titleInput.style.display = '';
+          titleInput.value = generateTitle();
+          downloadBtn.parentElement.style.display = '';
+          discardBtn.style.display = '';
+        }
+      }, 5000);
     }
     return;
   }
@@ -437,6 +446,16 @@ async function stopRecording() {
     titleInput.style.display = 'none';
     downloadBtn.parentElement.style.display = 'none';
     discardBtn.style.display = 'none';
+    // Safety timeout: if auto-upload hasn't completed in 10s, show manual controls
+    setTimeout(() => {
+      if (recordingInfo.textContent === 'Saving to Screencast...') {
+        recordingInfo.textContent = 'Auto-save is taking longer than expected.';
+        titleInput.style.display = '';
+        titleInput.value = generateTitle();
+        downloadBtn.parentElement.style.display = '';
+        discardBtn.style.display = '';
+      }
+    }, 10000);
   }
 }
 
