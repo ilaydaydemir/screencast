@@ -185,7 +185,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 });
 
 // === Start Recording ===
-async function handleStartRecording({ mode, cameraId, micId }) {
+async function handleStartRecording({ mode, cameraId, micId, desktopStreamId }) {
   console.log('[SW] handleStartRecording:', mode, 'camera:', cameraId, 'mic:', micId);
   currentMode = mode;
   currentCameraId = cameraId;
@@ -238,7 +238,7 @@ async function handleStartRecording({ mode, cameraId, micId }) {
     if (mode === 'tab') {
       return await startTabRecording(tab, cameraId, micId, recordingId, auth);
     } else if (mode === 'full-screen' || mode === 'window') {
-      return await startDesktopRecording(mode, tab, cameraId, micId, recordingId, auth);
+      return await startDesktopRecording(mode, tab, cameraId, micId, recordingId, auth, desktopStreamId);
     } else if (mode === 'camera-only') {
       return await startCameraOnlyRecording(cameraId, micId, recordingId, auth);
     }
@@ -556,17 +556,18 @@ async function startTabRecording(tab, cameraId, micId, recordingId, auth) {
 }
 
 // === Desktop/Window Recording ===
-async function startDesktopRecording(mode, tab, cameraId, micId, recordingId, auth) {
-  // Focus the recorder tab — getDisplayMedia needs a user gesture (click overlay).
-  // Store original tab to switch back after capture starts.
-  await chrome.tabs.update(recorderTabId, { active: true });
+async function startDesktopRecording(mode, tab, cameraId, micId, recordingId, auth, desktopStreamId) {
+  // Inject webcam bubble on active tab (captured as part of screen recording)
+  await injectBubbleAndToolbar(tab.id, cameraId, 0, false);
+  bubbleTabId = tab.id;
 
-  // Recorder tab shows "click to start" overlay, user clicks, getDisplayMedia runs.
-  // Stream is recorded directly (no canvas compositing — avoids frozen frame in bg tab).
+  // The popup already showed the picker and got the streamId (no targetTab binding).
+  // Forward to recorder tab which uses getUserMedia({chromeMediaSource: 'desktop'}).
   const result = await forwardToRecorderTab({
     action: 'startRecording',
     mode: mode,
-    cameraId: null, // webcam is handled by the content script bubble on the active tab
+    desktopStreamId,
+    cameraId: null, // webcam is on the active tab via content script bubble
     micId,
     recordingId,
     userId: auth.userId,
@@ -575,15 +576,10 @@ async function startDesktopRecording(mode, tab, cameraId, micId, recordingId, au
 
   if (!result || !result.success) {
     console.error('[SW] Recorder failed to start desktop capture:', result?.error);
-    // Switch back to original tab even on failure
-    await chrome.tabs.update(tab.id, { active: true }).catch(() => {});
+    await removeBubble(tab.id);
+    bubbleTabId = null;
     return { success: false, error: result?.error || 'Recorder failed to start' };
   }
-
-  // Inject bubble on original tab and switch back
-  await injectBubbleAndToolbar(tab.id, cameraId, 0, false);
-  bubbleTabId = tab.id;
-  await chrome.tabs.update(tab.id, { active: true });
 
   startTimer();
   recordingState = 'recording';

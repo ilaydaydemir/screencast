@@ -355,7 +355,7 @@ async function handleStart({ mode, tabCaptureStreamId, desktopStreamId, cameraId
   if (mode === 'tab') {
     await startTabMode(tabCaptureStreamId, micId);
   } else if (mode === 'full-screen' || mode === 'window') {
-    await startDesktopMode(mode, cameraId, micId);
+    await startDesktopMode(desktopStreamId, cameraId, micId);
   } else if (mode === 'camera-only') {
     await startCameraOnlyMode(cameraId, micId);
   }
@@ -406,31 +406,26 @@ async function startTabMode(streamId, micId) {
 }
 
 // === Desktop/Window Mode (Direct stream — no canvas compositing) ===
-// Canvas compositing freezes in background tabs (requestAnimationFrame stops).
-// Record the getDisplayMedia stream directly. The webcam bubble is injected
+// Record the getUserMedia stream directly. The webcam bubble is injected
 // as a content script on the active tab and captured as part of the screen.
-// getDisplayMedia requires a user gesture — show a click overlay.
-async function startDesktopMode(mode, cameraId, micId) {
-  console.log('[Recorder] startDesktopMode:', mode);
-  const overlay = document.getElementById('start-overlay');
-  overlay.style.display = 'flex';
-
-  const displaySurface = mode === 'window' ? 'window' : 'monitor';
-  screenStream = await new Promise((resolve, reject) => {
-    overlay.addEventListener('click', async () => {
-      overlay.style.display = 'none';
-      try {
-        const stream = await navigator.mediaDevices.getDisplayMedia({
-          video: { displaySurface },
-          audio: true,
-        });
-        resolve(stream);
-      } catch (err) {
-        reject(err);
-      }
-    }, { once: true });
+// The popup obtained the streamId via chooseDesktopMedia (no targetTab binding).
+async function startDesktopMode(streamId, cameraId, micId) {
+  console.log('[Recorder] startDesktopMode, streamId:', streamId?.slice(0, 20));
+  screenStream = await navigator.mediaDevices.getUserMedia({
+    audio: {
+      mandatory: {
+        chromeMediaSource: 'desktop',
+        chromeMediaSourceId: streamId,
+      },
+    },
+    video: {
+      mandatory: {
+        chromeMediaSource: 'desktop',
+        chromeMediaSourceId: streamId,
+      },
+    },
   });
-  console.log('[Recorder] getDisplayMedia succeeded, tracks:', screenStream.getTracks().map(t => t.kind + ':' + t.label));
+  console.log('[Recorder] getUserMedia desktop succeeded, tracks:', screenStream.getTracks().map(t => t.kind + ':' + t.label));
 
   // Build composite stream: screen video + mixed audio (system + mic)
   const compositeStream = new MediaStream();

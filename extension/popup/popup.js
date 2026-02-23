@@ -390,11 +390,29 @@ async function startRecording() {
   if (audioRafId) cancelAnimationFrame(audioRafId);
   if (audioContext) { audioContext.close(); audioContext = null; }
 
+  // For desktop/window modes, show the picker FROM the popup (has UI context).
+  // This avoids switching to the recorder tab — picker appears directly on screen.
+  let desktopStreamId = null;
+  if (currentMode === 'window' || currentMode === 'full-screen') {
+    const sources = currentMode === 'full-screen' ? ['screen'] : ['window'];
+    desktopStreamId = await new Promise((resolve) => {
+      chrome.desktopCapture.chooseDesktopMedia(sources, (streamId) => {
+        resolve(streamId || null);
+      });
+    });
+    if (!desktopStreamId) {
+      startBtn.disabled = false;
+      startBtn.textContent = 'Start Recording';
+      return; // User cancelled the picker
+    }
+  }
+
   const response = await sendMessage({
     action: 'startRecording',
     mode: currentMode,
     cameraId: cameraSelect.value || null,
     micId: micSelect.value || null,
+    desktopStreamId,
   });
 
   if (response && response.success) {
