@@ -557,15 +557,16 @@ async function startTabRecording(tab, cameraId, micId, recordingId, auth) {
 
 // === Desktop/Window Recording ===
 async function startDesktopRecording(mode, tab, cameraId, micId, recordingId, auth) {
-  // Focus the recorder tab — getDisplayMedia() needs a user gesture there
-  await chrome.tabs.update(recorderTabId, { active: true });
+  // Inject bubble on active tab first (webcam overlay captured as part of screen)
+  await injectBubbleAndToolbar(tab.id, cameraId, 0, false);
+  bubbleTabId = tab.id;
 
-  // Send start message — recorder tab will show a "click to start" overlay,
-  // then call getDisplayMedia() directly (no chooseDesktopMedia needed)
+  // Recorder tab calls getDisplayMedia() — picker appears on the active tab's screen.
+  // No need to focus the recorder tab; getDisplayMedia in extension pages works in background.
   const result = await forwardToRecorderTab({
     action: 'startRecording',
     mode: mode,
-    cameraId,
+    cameraId: null, // webcam is handled by the content script bubble, not canvas compositing
     micId,
     recordingId,
     userId: auth.userId,
@@ -574,13 +575,10 @@ async function startDesktopRecording(mode, tab, cameraId, micId, recordingId, au
 
   if (!result || !result.success) {
     console.error('[SW] Recorder failed to start desktop capture:', result?.error);
+    await removeBubble(tab.id);
+    bubbleTabId = null;
     return { success: false, error: result?.error || 'Recorder failed to start' };
   }
-
-  // Now inject bubble on the original tab and switch back to it
-  await injectBubbleAndToolbar(tab.id, cameraId, 0, false);
-  bubbleTabId = tab.id;
-  await chrome.tabs.update(tab.id, { active: true });
 
   startTimer();
   recordingState = 'recording';

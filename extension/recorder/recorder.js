@@ -405,87 +405,22 @@ async function startTabMode(streamId, micId) {
   await startMediaRecorder(compositeStream);
 }
 
-// === Desktop/Window Mode (Canvas Compositing) ===
+// === Desktop/Window Mode (Direct stream — no canvas compositing) ===
+// Canvas compositing freezes in background tabs (requestAnimationFrame stops).
+// Instead, record the getDisplayMedia stream directly. The webcam bubble is
+// injected as a content script on the active tab and captured as part of the screen.
 async function startDesktopMode(mode, cameraId, micId) {
-  // Use getDisplayMedia directly — requires user gesture via click overlay
-  const overlay = document.getElementById('start-overlay');
-  overlay.style.display = 'flex';
-
-  screenStream = await new Promise((resolve, reject) => {
-    overlay.addEventListener('click', async () => {
-      overlay.style.display = 'none';
-      try {
-        const displaySurface = mode === 'window' ? 'window' : 'monitor';
-        const stream = await navigator.mediaDevices.getDisplayMedia({
-          video: { displaySurface },
-          audio: true,
-        });
-        resolve(stream);
-      } catch (err) {
-        reject(err);
-      }
-    }, { once: true });
+  console.log('[Recorder] startDesktopMode:', mode);
+  const displaySurface = mode === 'window' ? 'window' : 'monitor';
+  screenStream = await navigator.mediaDevices.getDisplayMedia({
+    video: { displaySurface },
+    audio: true,
   });
+  console.log('[Recorder] getDisplayMedia succeeded, tracks:', screenStream.getTracks().map(t => t.kind + ':' + t.label));
 
-  const screenVideo = document.getElementById('screen-video');
-  screenVideo.srcObject = screenStream;
-  await screenVideo.play();
-
-  const webcamVideo = document.getElementById('webcam-video');
-  if (cameraId) {
-    webcamStream = await navigator.mediaDevices.getUserMedia({
-      video: { deviceId: { exact: cameraId }, width: { ideal: 480 }, height: { ideal: 480 } },
-    });
-    webcamVideo.srcObject = webcamStream;
-    await webcamVideo.play();
-  }
-
-  const canvas = document.getElementById('composite-canvas');
-  const videoTrack = screenStream.getVideoTracks()[0];
-  const settings = videoTrack?.getSettings();
-  const cw = settings?.width || 1920;
-  const ch = settings?.height || 1080;
-  canvas.width = cw;
-  canvas.height = ch;
-  const ctx = canvas.getContext('2d');
-
-  const webcamSize = 150;
-  const webcamMargin = 20;
-
-  function drawFrame() {
-    ctx.fillStyle = '#000';
-    ctx.fillRect(0, 0, cw, ch);
-
-    if (screenVideo.readyState >= 2) {
-      ctx.drawImage(screenVideo, 0, 0, cw, ch);
-    }
-
-    if (webcamVideo.readyState >= 2 && cameraId) {
-      const cx = cw - webcamMargin - webcamSize / 2;
-      const cy = ch - webcamMargin - webcamSize / 2;
-
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(cx, cy, webcamSize / 2, 0, Math.PI * 2);
-      ctx.closePath();
-      ctx.clip();
-      ctx.drawImage(webcamVideo, cx - webcamSize / 2, cy - webcamSize / 2, webcamSize, webcamSize);
-      ctx.restore();
-
-      ctx.beginPath();
-      ctx.arc(cx, cy, webcamSize / 2, 0, Math.PI * 2);
-      ctx.strokeStyle = '#fff';
-      ctx.lineWidth = 3;
-      ctx.stroke();
-    }
-
-    rafId = requestAnimationFrame(drawFrame);
-  }
-  drawFrame();
-
-  const canvasStream = canvas.captureStream(VIDEO_FRAME_RATE);
+  // Build composite stream: screen video + mixed audio (system + mic)
   const compositeStream = new MediaStream();
-  canvasStream.getVideoTracks().forEach(t => compositeStream.addTrack(t));
+  screenStream.getVideoTracks().forEach(t => compositeStream.addTrack(t));
 
   audioContext = new AudioContext();
   const destination = audioContext.createMediaStreamDestination();
