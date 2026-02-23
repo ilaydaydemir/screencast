@@ -120,7 +120,9 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
 
     try {
       const isPaused = recordingState === 'paused';
-      await injectBubbleAndToolbar(newTabId, currentCameraId, elapsedSeconds, isPaused);
+      // Only show camera in bubble for tab mode — other modes use offscreen canvas compositing
+      const camId = currentMode === 'tab' ? currentCameraId : null;
+      await injectBubbleAndToolbar(newTabId, camId, elapsedSeconds, isPaused);
       bubbleTabId = newTabId;
     } catch {}
   }
@@ -137,7 +139,8 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 
   if (tab.url && !tab.url.startsWith('chrome://') && !tab.url.startsWith('chrome-extension://') && !tab.url.startsWith('about:')) {
     const isPaused = recordingState === 'paused';
-    await injectBubbleAndToolbar(tabId, currentCameraId, elapsedSeconds, isPaused);
+    const camId = currentMode === 'tab' ? currentCameraId : null;
+    await injectBubbleAndToolbar(tabId, camId, elapsedSeconds, isPaused);
   }
 });
 
@@ -444,15 +447,13 @@ async function removeBubble(tabId) {
             const iframe = shadow.querySelector('iframe');
             if (iframe) {
               // Send stop signal via postMessage (works cross-origin)
-              // camera.js listens for this and releases the camera stream immediately
               try { iframe.contentWindow.postMessage('stop-camera', '*'); } catch {}
+              // Blank src to force camera release
+              iframe.src = 'about:blank';
             }
           }
-          // Small delay to let camera.js process the stop message before removing iframe
-          setTimeout(() => {
-            if (host._stream) host._stream.getTracks().forEach(t => t.stop());
-            host.remove();
-          }, 100);
+          if (host._stream) host._stream.getTracks().forEach(t => t.stop());
+          host.remove();
         }
         if (window._screencastListener) {
           chrome.runtime.onMessage.removeListener(window._screencastListener);
@@ -460,8 +461,6 @@ async function removeBubble(tabId) {
         }
       },
     });
-    // Wait for the setTimeout inside to execute
-    await new Promise(r => setTimeout(r, 150));
   } catch {}
 }
 
@@ -487,7 +486,9 @@ async function startTabRecording(tab, cameraId, micId) {
 
 // === Desktop/Window Recording ===
 async function startDesktopRecording(mode, tab, cameraId, micId) {
-  await injectBubbleAndToolbar(tab.id, cameraId, 0, false);
+  // Don't pass cameraId to bubble — offscreen handles webcam via canvas compositing.
+  // Passing cameraId here would cause dual camera access conflict on macOS.
+  await injectBubbleAndToolbar(tab.id, null, 0, false);
   bubbleTabId = tab.id;
 
   return new Promise((resolve) => {
