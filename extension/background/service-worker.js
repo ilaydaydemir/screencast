@@ -562,9 +562,10 @@ async function startDesktopRecording(mode, tab, cameraId, micId, recordingId, au
 
   return new Promise((resolve) => {
     const sources = mode === 'full-screen' ? ['screen'] : ['window'];
-    // Don't pass tab — that binds the stream to the active tab.
-    // Without tab, the stream is usable by any extension page (our recorder tab).
-    chrome.desktopCapture.chooseDesktopMedia(sources, async (streamId) => {
+    // Pass the recorder tab as targetTab so the stream is bound to it
+    // (the recorder tab is where getUserMedia will consume the stream).
+    const recorderTab = await chrome.tabs.get(recorderTabId);
+    chrome.desktopCapture.chooseDesktopMedia(sources, recorderTab, async (streamId) => {
       if (!streamId) {
         await removeBubble(tab.id);
         bubbleTabId = null;
