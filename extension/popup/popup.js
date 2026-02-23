@@ -440,12 +440,12 @@ async function stopRecording() {
   }
 }
 
-// === Download (direct IDB → offscreen fallback) ===
+// === Download (OPFS → IDB → offscreen fallback) ===
 async function downloadRecording() {
   const title = titleInput.value || generateTitle();
 
-  // Try direct IDB download first (works even if offscreen is closed)
-  const blob = await loadBlobFromIDB();
+  // Try direct download from OPFS/IDB (works even if offscreen is closed)
+  const blob = await loadRecordingBlob();
   if (blob) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -577,15 +577,30 @@ function generateTitle() {
     + ' ' + now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
 }
 
-// Direct IDB access — works even if offscreen document is closed
-function idbGet(key) {
+// === Direct storage access — works even if offscreen document is closed ===
+
+// OPFS: Read the recording file appended chunk-by-chunk during recording
+async function loadBlobFromOPFS() {
+  try {
+    const root = await navigator.storage.getDirectory();
+    const fileHandle = await root.getFileHandle('recording.webm');
+    const file = await fileHandle.getFile();
+    if (file.size === 0) return null;
+    return file;
+  } catch {
+    return null;
+  }
+}
+
+// IDB: Read the final blob saved on stop
+function loadBlobFromIDB() {
   return new Promise((resolve) => {
     const req = indexedDB.open('screencast', 1);
     req.onupgradeneeded = (e) => { e.target.result.createObjectStore('blobs'); };
     req.onsuccess = (e) => {
       const db = e.target.result;
       const tx = db.transaction('blobs', 'readonly');
-      const getReq = tx.objectStore('blobs').get(key);
+      const getReq = tx.objectStore('blobs').get('recording');
       getReq.onsuccess = () => { db.close(); resolve(getReq.result || null); };
       getReq.onerror = () => { db.close(); resolve(null); };
     };
@@ -593,25 +608,11 @@ function idbGet(key) {
   });
 }
 
-// Try final blob first, then reconstruct from progressive batches
-async function loadBlobFromIDB() {
-  // 1. Try the complete final blob
-  const final = await idbGet('recording');
-  if (final) return final;
-
-  // 2. Reconstruct from progressive batches saved during recording
-  const meta = await idbGet('batch-meta');
-  if (!meta || !meta.count) return null;
-
-  const batches = [];
-  for (let i = 0; i < meta.count; i++) {
-    const batch = await idbGet(`batch-${i}`);
-    if (batch) batches.push(batch);
-    else break;
-  }
-
-  if (batches.length === 0) return null;
-  return new Blob(batches, { type: meta.mimeType || 'video/webm' });
+// Try all sources: OPFS → IDB
+async function loadRecordingBlob() {
+  const opfs = await loadBlobFromOPFS();
+  if (opfs) return opfs;
+  return await loadBlobFromIDB();
 }
 
 // === Auth Sync: Read Supabase token from web app ===

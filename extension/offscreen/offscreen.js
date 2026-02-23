@@ -24,17 +24,65 @@ let micStream = null;
 let audioContext = null;
 let rafId = null;
 let keepAliveCtx = null;
-let progressBatchCount = 0;
-let pendingChunks = [];
 let currentMimeType = 'video/webm';
+let currentRecordingId = null;
+let opfsWritable = null; // OPFS file writable stream — append chunks in real-time
 
-// === IndexedDB: Progressive chunk saving ===
-// Saves recording data every ~10 seconds so it survives offscreen document restarts.
-// Schema (all in 'blobs' store):
-//   'recording'     → final complete Blob (saved on stop)
-//   'batch-0', 'batch-1', ... → progressive Blob batches (saved during recording)
-//   'batch-meta'    → { count: N, mimeType: string }
+// === OPFS: Origin Private File System — append chunks during recording ===
+// Each chunk is appended to a single file in real-time.
+// If offscreen dies, the file persists and can be read from popup or a new offscreen.
 
+async function openOPFSWritable() {
+  try {
+    const root = await navigator.storage.getDirectory();
+    const fileHandle = await root.getFileHandle('recording.webm', { create: true });
+    // Truncate any old data
+    opfsWritable = await fileHandle.createWritable();
+    return true;
+  } catch (err) {
+    console.warn('OPFS not available:', err);
+    opfsWritable = null;
+    return false;
+  }
+}
+
+async function appendToOPFS(chunk) {
+  if (!opfsWritable) return;
+  try {
+    await opfsWritable.write(chunk);
+  } catch {
+    // If write fails, close and null out
+    opfsWritable = null;
+  }
+}
+
+async function closeOPFS() {
+  if (opfsWritable) {
+    try { await opfsWritable.close(); } catch {}
+    opfsWritable = null;
+  }
+}
+
+async function loadBlobFromOPFS() {
+  try {
+    const root = await navigator.storage.getDirectory();
+    const fileHandle = await root.getFileHandle('recording.webm');
+    const file = await fileHandle.getFile();
+    if (file.size === 0) return null;
+    return file;
+  } catch {
+    return null;
+  }
+}
+
+async function deleteOPFSFile() {
+  try {
+    const root = await navigator.storage.getDirectory();
+    await root.removeEntry('recording.webm');
+  } catch {}
+}
+
+// === IndexedDB: Final blob backup (for popup direct download) ===
 function idbOperation(mode, fn) {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open('screencast', 1);
@@ -42,8 +90,7 @@ function idbOperation(mode, fn) {
     req.onsuccess = (e) => {
       const db = e.target.result;
       const tx = db.transaction('blobs', mode);
-      const store = tx.objectStore('blobs');
-      fn(store, tx);
+      fn(tx.objectStore('blobs'));
       tx.oncomplete = () => { db.close(); resolve(); };
       tx.onerror = () => { db.close(); reject(tx.error); };
     };
@@ -66,58 +113,25 @@ function idbGet(key) {
   });
 }
 
-// Save a batch of chunks + update metadata (called every ~10 seconds during recording)
-function saveProgressBatch(batchIndex, batchBlob, totalCount, mimeType) {
-  return idbOperation('readwrite', (store) => {
-    store.put(batchBlob, `batch-${batchIndex}`);
-    store.put({ count: totalCount, mimeType }, 'batch-meta');
-  });
-}
-
-// Save the final complete blob (called on stop)
 function saveFinalBlob(blob) {
-  return idbOperation('readwrite', (store) => {
-    store.put(blob, 'recording');
-  });
+  return idbOperation('readwrite', (store) => { store.put(blob, 'recording'); });
 }
 
-// Clear all recording data from IDB (called on new recording or discard)
 function clearAllIDB() {
-  return idbOperation('readwrite', (store) => {
-    store.clear();
-  });
+  return idbOperation('readwrite', (store) => { store.clear(); });
 }
 
-// Load the final blob
-function loadFinalBlob() {
-  return idbGet('recording');
-}
-
-// Reconstruct recording from progressive batches (fallback when final blob is missing)
-async function reconstructFromBatches() {
-  const meta = await idbGet('batch-meta');
-  if (!meta || !meta.count) return null;
-
-  const batches = [];
-  for (let i = 0; i < meta.count; i++) {
-    const batch = await idbGet(`batch-${i}`);
-    if (batch) batches.push(batch);
-    else break; // If a batch is missing, use what we have
-  }
-
-  if (batches.length === 0) return null;
-  return new Blob(batches, { type: meta.mimeType || 'video/webm' });
-}
-
-// Try all sources: memory → final IDB blob → reconstruct from batches
+// Try all sources: memory → OPFS file → IDB final blob
 async function loadRecording() {
   if (recordedBlob) return recordedBlob;
 
-  const final = await loadFinalBlob();
-  if (final) { recordedBlob = final; return final; }
+  // Try OPFS (has the full recording appended chunk-by-chunk)
+  const opfsBlob = await loadBlobFromOPFS();
+  if (opfsBlob) { recordedBlob = opfsBlob; return opfsBlob; }
 
-  const reconstructed = await reconstructFromBatches();
-  if (reconstructed) { recordedBlob = reconstructed; return reconstructed; }
+  // Try IDB final blob
+  const idbBlob = await idbGet('recording');
+  if (idbBlob) { recordedBlob = idbBlob; return idbBlob; }
 
   return null;
 }
@@ -176,11 +190,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'discardRecording':
       cleanup();
       stopKeepAlive();
+      closeOPFS().catch(() => {});
       recordedBlob = null;
       chunks = [];
-      pendingChunks = [];
-      progressBatchCount = 0;
       clearAllIDB().catch(() => {});
+      deleteOPFSFile().catch(() => {});
       sendResponse({ success: true });
       return false;
 
@@ -235,9 +249,10 @@ function getSupportedMimeType() {
 }
 
 // === Start Recording ===
-async function handleStart({ mode, tabCaptureStreamId, desktopStreamId, cameraId, micId }) {
+async function handleStart({ mode, tabCaptureStreamId, desktopStreamId, cameraId, micId, recordingId }) {
   chunks = [];
   recordedBlob = null;
+  currentRecordingId = recordingId || null;
 
   if (mode === 'tab') {
     await startTabMode(tabCaptureStreamId, micId);
@@ -414,16 +429,16 @@ async function startCameraOnlyMode(cameraId, micId) {
 // === MediaRecorder ===
 let stopResolve = null;
 
-function startMediaRecorder(stream) {
+async function startMediaRecorder(stream) {
   startKeepAlive(); // Prevent Chrome from closing offscreen document
 
   const mimeType = getSupportedMimeType();
   currentMimeType = mimeType;
-  progressBatchCount = 0;
-  pendingChunks = [];
 
-  // Clear old recording data from IDB before starting new recording
+  // Clear old data and open OPFS file for real-time append
   clearAllIDB().catch(() => {});
+  deleteOPFSFile().catch(() => {});
+  await openOPFSWritable();
 
   mediaRecorder = new MediaRecorder(stream, {
     mimeType,
@@ -433,32 +448,19 @@ function startMediaRecorder(stream) {
   mediaRecorder.ondataavailable = (e) => {
     if (e.data.size > 0) {
       chunks.push(e.data);
-      pendingChunks.push(e.data);
-
-      // Save batch to IDB every 10 chunks (~10 seconds)
-      // This ensures data survives even if Chrome kills the offscreen document
-      if (pendingChunks.length >= 10) {
-        const batch = new Blob(pendingChunks, { type: mimeType });
-        const idx = progressBatchCount++;
-        pendingChunks = [];
-        saveProgressBatch(idx, batch, progressBatchCount, mimeType).catch(() => {});
-      }
+      // Append to OPFS in real-time — data persists even if offscreen dies
+      appendToOPFS(e.data);
     }
   };
 
   mediaRecorder.onstop = async () => {
-    // Save any remaining pending chunks to IDB
-    if (pendingChunks.length > 0) {
-      const batch = new Blob(pendingChunks, { type: mimeType });
-      const idx = progressBatchCount++;
-      pendingChunks = [];
-      try { await saveProgressBatch(idx, batch, progressBatchCount, mimeType); } catch {}
-    }
+    // Close OPFS writable so the file is finalized
+    await closeOPFS();
 
     recordedBlob = new Blob(chunks, { type: mimeType });
     const blobSize = recordedBlob.size;
 
-    // Also save the complete blob for fast access
+    // Also save to IDB for popup direct download
     try { await saveFinalBlob(recordedBlob); } catch {}
 
     cleanup();
@@ -466,7 +468,6 @@ function startMediaRecorder(stream) {
       action: 'recordingStopped',
       blobSize,
     }).catch(() => {});
-    // Resolve the stop promise if someone is waiting
     if (stopResolve) {
       stopResolve({ success: true, blobSize });
       stopResolve = null;
@@ -589,7 +590,8 @@ async function handleUpload({ title, duration, mode }) {
     stopKeepAlive(); // Upload done, safe to let Chrome close offscreen
     recordedBlob = null;
     chunks = [];
-    clearAllIDB().catch(() => {}); // Clean up IDB after successful upload
+    clearAllIDB().catch(() => {});
+    deleteOPFSFile().catch(() => {});
     return { success: true, recordingId: recording.id };
   } catch (err) {
     return { success: false, error: err.message };
