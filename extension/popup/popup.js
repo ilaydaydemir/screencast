@@ -390,21 +390,44 @@ async function startRecording() {
   if (audioRafId) cancelAnimationFrame(audioRafId);
   if (audioContext) { audioContext.close(); audioContext = null; }
 
-  // For desktop/window modes, show the picker FROM the popup (has UI context).
-  // This avoids switching to the recorder tab — picker appears directly on screen.
-  let desktopStreamId = null;
+  // For desktop/window modes, inject a content script on the active tab.
+  // executeScript propagates user activation from this click → getDisplayMedia works.
   if (currentMode === 'window' || currentMode === 'full-screen') {
-    const sources = currentMode === 'full-screen' ? ['screen'] : ['window'];
-    desktopStreamId = await new Promise((resolve) => {
-      chrome.desktopCapture.chooseDesktopMedia(sources, (streamId) => {
-        resolve(streamId || null);
-      });
+    // Ask service worker to prepare (create recording row, get auth)
+    const prep = await sendMessage({
+      action: 'prepareDesktopRecording',
+      mode: currentMode,
+      cameraId: cameraSelect.value || null,
+      micId: micSelect.value || null,
     });
-    if (!desktopStreamId) {
+    if (!prep || !prep.success) {
       startBtn.disabled = false;
       startBtn.textContent = 'Start Recording';
-      return; // User cancelled the picker
+      alert(prep?.error || 'Failed to prepare recording');
+      return;
     }
+    // Store config for the content script to read
+    await chrome.storage.session.set({
+      desktopRecordConfig: {
+        mode: currentMode,
+        micId: micSelect.value || null,
+        recordingId: prep.recordingId,
+        userId: prep.userId,
+        authToken: prep.authToken,
+      },
+    });
+    // Inject the recording script (user activation propagates!)
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      files: ['content/desktop-recorder.js'],
+    });
+    // The content script will send 'desktopRecordingStarted' to the service worker.
+    // Show recording view immediately.
+    elapsedSeconds = 0;
+    showView('recording');
+    startTimerDisplay();
+    return;
   }
 
   const response = await sendMessage({
@@ -412,7 +435,6 @@ async function startRecording() {
     mode: currentMode,
     cameraId: cameraSelect.value || null,
     micId: micSelect.value || null,
-    desktopStreamId,
   });
 
   if (response && response.success) {
