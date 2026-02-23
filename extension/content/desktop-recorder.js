@@ -28,6 +28,12 @@
     screenStream = await navigator.mediaDevices.getDisplayMedia({
       video: { displaySurface },
       audio: true,
+      // Don't pre-select a tab — we want the window/screen picker
+      preferCurrentTab: false,
+      // Allow switching surfaces mid-recording
+      surfaceSwitching: 'include',
+      // Exclude current tab from tab list to discourage tab selection
+      selfBrowserSurface: 'exclude',
     });
   } catch (err) {
     console.error('[DesktopRec] getDisplayMedia failed:', err);
