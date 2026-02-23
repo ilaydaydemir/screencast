@@ -186,6 +186,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 
 // === Start Recording ===
 async function handleStartRecording({ mode, cameraId, micId }) {
+  console.log('[SW] handleStartRecording:', mode, 'camera:', cameraId, 'mic:', micId);
   currentMode = mode;
   currentCameraId = cameraId;
   elapsedSeconds = 0;
@@ -194,6 +195,7 @@ async function handleStartRecording({ mode, cameraId, micId }) {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     activeTabId = tab.id;
+    console.log('[SW] Active tab:', tab.id, tab.url);
 
     // Create recording row UPFRONT (gives us recordingId for progressive upload)
     const auth = await chrome.storage.local.get(['authToken', 'userId']);
@@ -598,6 +600,7 @@ async function startCameraOnlyRecording(cameraId, micId, recordingId, auth) {
 
 // === Stop ===
 async function handleStopRecording() {
+  console.log('[SW] handleStopRecording called');
   clearInterval(timerInterval);
   const savedElapsed = elapsedSeconds;
   const savedMode = currentMode;
@@ -607,7 +610,9 @@ async function handleStopRecording() {
     bubbleTabId = null;
   }
 
+  console.log('[SW] Sending stopRecording to recorder tab...');
   const stopResult = await forwardToRecorderTab({ action: 'stopRecording' });
+  console.log('[SW] stopResult:', JSON.stringify(stopResult));
   recordingState = 'stopped';
   currentCameraId = null;
 
@@ -616,11 +621,14 @@ async function handleStopRecording() {
   const uploadWithErrorHandler = async () => {
     try {
       if (stopResult?.progressiveUploadOk) {
+        console.log('[SW] Progressive upload OK, calling assembleAndFinalize');
         await assembleAndFinalize(savedElapsed, savedMode);
       } else {
+        console.log('[SW] No progressive upload, calling autoUpload');
         await autoUpload(savedElapsed, savedMode);
       }
     } catch (err) {
+      console.error('[SW] Upload error handler caught:', err);
       uploadError = err.message || 'Upload failed unexpectedly';
       chrome.runtime.sendMessage({ action: 'autoUploadFailed', error: uploadError }).catch(() => {});
     }
@@ -676,11 +684,14 @@ async function assembleAndFinalize(duration, mode) {
 
 // === Auto Upload (full blob — fallback when progressive upload fails) ===
 async function autoUpload(duration, mode) {
+  console.log('[SW] autoUpload started, duration:', duration, 'mode:', mode);
   const auth = await chrome.storage.local.get(['authToken', 'userId']);
   if (!auth.authToken || !auth.userId) {
+    console.log('[SW] autoUpload: NOT SIGNED IN');
     chrome.runtime.sendMessage({ action: 'autoUploadFailed', error: 'Not signed in' }).catch(() => {});
     return;
   }
+  console.log('[SW] autoUpload: auth OK, userId:', auth.userId);
 
   const now = new Date();
   const title = 'Recording - ' + now.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) + ' ' + now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
@@ -688,7 +699,9 @@ async function autoUpload(duration, mode) {
   const uploadMsg = { action: 'uploadToWebApp', title, duration: duration || 0, mode: mode || 'tab' };
 
   // Attempt 1: Upload immediately — recorder tab alive, blob in memory
+  console.log('[SW] autoUpload attempt 1...');
   let result = await forwardToRecorderTab(uploadMsg);
+  console.log('[SW] autoUpload attempt 1 result:', JSON.stringify(result));
   if (result && result.success) {
     recordingState = 'idle';
     lastRecordingId = null;
@@ -848,21 +861,22 @@ async function waitForRecorderTab() {
 }
 
 async function forwardToRecorderTab(msg) {
+  console.log('[SW] forwardToRecorderTab:', msg.action, 'recorderTabId:', recorderTabId);
   if (!recorderTabId) {
     try {
       await ensureRecorderTab();
-    } catch {
+      console.log('[SW] ensureRecorderTab done, recorderTabId:', recorderTabId);
+    } catch (e) {
+      console.error('[SW] ensureRecorderTab failed:', e);
       return { success: false, error: 'Recorder tab not available' };
     }
   }
   try {
-    // Use chrome.runtime.sendMessage (not chrome.tabs.sendMessage) because the
-    // recorder tab is an extension page, not a content script. Extension pages
-    // listen via chrome.runtime.onMessage. The target:'recorder' filter ensures
-    // only the recorder page handles it (service worker ignores it).
-    return await chrome.runtime.sendMessage({ ...msg, target: 'recorder' });
+    const result = await chrome.runtime.sendMessage({ ...msg, target: 'recorder' });
+    console.log('[SW] forwardToRecorderTab response for', msg.action, ':', JSON.stringify(result)?.slice(0, 200));
+    return result;
   } catch (err) {
-    console.error('Failed to forward to recorder tab:', err);
+    console.error('[SW] forwardToRecorderTab FAILED for', msg.action, ':', err);
     return { success: false, error: err.message };
   }
 }

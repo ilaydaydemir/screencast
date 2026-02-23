@@ -250,14 +250,15 @@ async function flushUploadQueue() {
 // === Message Handler ===
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.target !== 'recorder') return false;
+  console.log('[Recorder] Received message:', message.action);
 
   switch (message.action) {
     case 'startRecording':
-      handleStart(message).then(r => sendResponse(r)).catch(e => sendResponse({ success: false, error: e.message }));
+      handleStart(message).then(r => { console.log('[Recorder] startRecording result:', r); sendResponse(r); }).catch(e => { console.error('[Recorder] startRecording error:', e); sendResponse({ success: false, error: e.message }); });
       return true;
 
     case 'stopRecording':
-      handleStop().then(result => sendResponse(result));
+      handleStop().then(result => { console.log('[Recorder] stopRecording result:', JSON.stringify(result)); sendResponse(result); });
       return true;
 
     case 'pauseRecording':
@@ -275,7 +276,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
 
     case 'uploadToWebApp':
-      handleUpload(message).then(sendResponse);
+      console.log('[Recorder] uploadToWebApp called, recordedBlob:', !!recordedBlob, 'currentRecordingId:', currentRecordingId);
+      handleUpload(message).then(r => { console.log('[Recorder] upload result:', JSON.stringify(r)?.slice(0, 200)); sendResponse(r); });
       return true;
 
     case 'discardRecording':
