@@ -393,6 +393,15 @@ async function startRecording() {
   // For desktop/window modes, inject a content script on the active tab.
   // executeScript propagates user activation from this click → getDisplayMedia works.
   if (currentMode === 'window' || currentMode === 'full-screen') {
+    // Check if active tab is injectable (not chrome://, about:, etc.)
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab || !tab.url || tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://') || tab.url.startsWith('about:') || tab.url.startsWith('edge://')) {
+      startBtn.disabled = false;
+      startBtn.textContent = 'Start Recording';
+      alert('Please navigate to a regular web page first (e.g. google.com). Chrome internal pages cannot be used for screen recording.');
+      return;
+    }
+
     // Ask service worker to prepare (create recording row, get auth)
     const prep = await sendMessage({
       action: 'prepareDesktopRecording',
@@ -410,6 +419,7 @@ async function startRecording() {
     await chrome.storage.session.set({
       desktopRecordConfig: {
         mode: currentMode,
+        cameraId: cameraSelect.value || null,
         micId: micSelect.value || null,
         recordingId: prep.recordingId,
         userId: prep.userId,
@@ -417,11 +427,17 @@ async function startRecording() {
       },
     });
     // Inject the recording script (user activation propagates!)
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      files: ['content/desktop-recorder.js'],
-    });
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ['content/desktop-recorder.js'],
+      });
+    } catch (err) {
+      startBtn.disabled = false;
+      startBtn.textContent = 'Start Recording';
+      alert('Cannot start recording on this page. Please navigate to a regular web page first.');
+      return;
+    }
     // The content script will send 'desktopRecordingStarted' to the service worker.
     // Show recording view immediately.
     elapsedSeconds = 0;
@@ -594,6 +610,13 @@ chrome.runtime.onMessage.addListener((message) => {
     titleInput.value = generateTitle();
     downloadBtn.parentElement.style.display = '';
     discardBtn.style.display = '';
+  }
+  if (message.action === 'desktopRecordingFailed') {
+    // User cancelled the screen picker or getDisplayMedia failed
+    clearInterval(timerInterval);
+    showView('setup');
+    startBtn.disabled = false;
+    startBtn.textContent = 'Start Recording';
   }
   if (message.action === 'recordingCancelled') {
     clearInterval(timerInterval);

@@ -3,6 +3,12 @@
 // Records the screen stream directly (no canvas compositing needed).
 
 (async () => {
+  // Guard against double injection
+  if (window._screencastDesktopRecorderActive) {
+    console.warn('[DesktopRec] Already active, skipping duplicate injection');
+    return;
+  }
+  window._screencastDesktopRecorderActive = true;
   const SUPABASE_URL = 'https://bgsvuywxejpmkstgqizq.supabase.co';
   const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJnc3Z1eXd4ZWpwbWtzdGdxaXpxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE2MDc0MzMsImV4cCI6MjA4NzE4MzQzM30.EvHOy5sBbXzSxjRS5vPGzm8cnFrOXxDfclP-ru3VU_M';
   const SUPPORTED_MIME_TYPES = [
@@ -19,7 +25,7 @@
     console.error('[DesktopRec] No config found');
     return;
   }
-  const { mode, micId, recordingId, userId, authToken } = config;
+  const { mode, cameraId, micId, recordingId, userId, authToken } = config;
 
   // --- Get screen stream (has user activation from popup click) ---
   let screenStream;
@@ -37,6 +43,7 @@
     });
   } catch (err) {
     console.error('[DesktopRec] getDisplayMedia failed:', err);
+    window._screencastDesktopRecorderActive = false;
     chrome.runtime.sendMessage({ action: 'desktopRecordingFailed', error: err.message });
     return;
   }
@@ -110,9 +117,13 @@
   recorder.onstop = async () => {
     const blob = new Blob(chunks, { type: mimeType });
     console.log('[DesktopRec] Recording stopped, blob size:', blob.size);
-    cleanup();
+    // Stop media tracks (but keep keepalive port open during upload)
+    screenStream.getTracks().forEach(t => t.stop());
+    if (micStream) micStream.getTracks().forEach(t => t.stop());
+    audioContext.close().catch(() => {});
 
     if (blob.size === 0) {
+      cleanup();
       chrome.runtime.sendMessage({ action: 'desktopRecordingComplete', success: false, error: 'Empty recording' });
       return;
     }
@@ -177,9 +188,11 @@
       });
 
       chrome.runtime.sendMessage({ action: 'uploadProgress', progress: 100 });
+      cleanup();
       chrome.runtime.sendMessage({ action: 'desktopRecordingComplete', success: true, recordingId });
     } catch (err) {
       console.error('[DesktopRec] Upload error:', err);
+      cleanup();
       chrome.runtime.sendMessage({ action: 'desktopRecordingComplete', success: false, error: err.message });
     }
   };
@@ -196,8 +209,8 @@
   recorder.start(1000);
   console.log('[DesktopRec] Recording started, mode:', mode, 'displaySurface:', trackSettings.displaySurface);
 
-  // Notify service worker
-  chrome.runtime.sendMessage({ action: 'desktopRecordingStarted', recordingId });
+  // Notify service worker (include all state so SW can restore after sleep)
+  chrome.runtime.sendMessage({ action: 'desktopRecordingStarted', recordingId, cameraId: cameraId || null, mode });
 
   // --- Listen for stop/pause/resume from service worker ---
   chrome.runtime.onMessage.addListener((msg) => {
@@ -233,6 +246,7 @@
     screenStream.getTracks().forEach(t => t.stop());
     if (micStream) micStream.getTracks().forEach(t => t.stop());
     audioContext.close().catch(() => {});
+    window._screencastDesktopRecorderActive = false;
   }
 
   // --- Thumbnail generator ---
