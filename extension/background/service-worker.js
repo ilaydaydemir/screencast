@@ -298,6 +298,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       isDesktopContentScript = false;
       if (message.success && !message.discarded) {
         lastRecordingId = message.recordingId;
+        chrome.storage.session.set({ uploadResult: { success: true, ts: Date.now() } }).catch(() => {});
         chrome.runtime.sendMessage({ action: 'autoUploadComplete' }).catch(() => {});
       } else if (message.discarded) {
         // Delete orphaned recording row
@@ -315,6 +316,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         lastRecordingId = null;
         chrome.runtime.sendMessage({ action: 'recordingCancelled' }).catch(() => {});
       } else {
+        chrome.storage.session.set({ uploadResult: { success: false, error: message.error, ts: Date.now() } }).catch(() => {});
         chrome.runtime.sendMessage({ action: 'autoUploadFailed', error: message.error }).catch(() => {});
       }
       if (bubbleTabId) {
@@ -660,7 +662,7 @@ async function injectBubbleAndToolbar(tabId, cameraId, elapsed, isPaused) {
           const iframe = document.createElement('iframe');
           iframe.src = chrome.runtime.getURL('camera/camera.html?d=' + encodeURIComponent(camId));
           iframe.style.cssText = 'width:100%;height:100%;border:none;display:block;border-radius:50%;';
-          iframe.allow = 'camera';
+          iframe.allow = 'camera *';
           bubble.appendChild(iframe);
         } else {
           bubble.style.background = '#333';
@@ -928,6 +930,7 @@ async function assembleAndFinalize(duration, mode) {
       // Clean up IDB + close recorder tab
       await forwardToRecorderTab({ action: 'discardRecording' });
       await closeRecorderTab();
+      chrome.storage.session.set({ uploadResult: { success: true, ts: Date.now() } }).catch(() => {});
       chrome.runtime.sendMessage({ action: 'autoUploadComplete', recordingId: completedId }).catch(() => {});
       return;
     }
@@ -966,6 +969,7 @@ async function autoUpload(duration, mode) {
     lastRecordingId = null;
     await chrome.storage.session.remove(['lastRecordingId']);
     await closeRecorderTab();
+    chrome.storage.session.set({ uploadResult: { success: true, ts: Date.now() } }).catch(() => {});
     chrome.runtime.sendMessage({ action: 'autoUploadComplete', recordingId: result.recordingId }).catch(() => {});
     return;
   }
@@ -978,6 +982,7 @@ async function autoUpload(duration, mode) {
     lastRecordingId = null;
     await chrome.storage.session.remove(['lastRecordingId']);
     await closeRecorderTab();
+    chrome.storage.session.set({ uploadResult: { success: true, ts: Date.now() } }).catch(() => {});
     chrome.runtime.sendMessage({ action: 'autoUploadComplete', recordingId: result.recordingId }).catch(() => {});
     return;
   }
@@ -991,6 +996,7 @@ async function autoUpload(duration, mode) {
       lastRecordingId = null;
       await chrome.storage.session.remove(['lastRecordingId']);
       await closeRecorderTab();
+      chrome.storage.session.set({ uploadResult: { success: true, ts: Date.now() } }).catch(() => {});
       chrome.runtime.sendMessage({ action: 'autoUploadComplete', recordingId: retry.recordingId }).catch(() => {});
       return;
     }
@@ -998,6 +1004,7 @@ async function autoUpload(duration, mode) {
   } else {
     uploadError = result?.error || 'Upload failed';
   }
+  chrome.storage.session.set({ uploadResult: { success: false, error: uploadError, ts: Date.now() } }).catch(() => {});
   chrome.runtime.sendMessage({ action: 'autoUploadFailed', error: uploadError }).catch(() => {});
 }
 

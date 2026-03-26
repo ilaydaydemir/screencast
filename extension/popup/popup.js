@@ -75,7 +75,31 @@ document.addEventListener('DOMContentLoaded', async () => {
       recordingInfo.textContent = 'Upload error: ' + state.uploadError;
       titleInput.value = generateTitle();
     } else {
-      // Auto-upload is in progress — but show manual controls after 5s in case it's stuck
+      // Check if upload already completed while popup was closed
+      const stored = await chrome.storage.session.get(['uploadResult']);
+      const res = stored.uploadResult;
+      if (res && (Date.now() - res.ts) < 120000) {
+        // Result is fresh (< 2 min old)
+        if (res.success) {
+          showView('done');
+          recordingInfo.textContent = 'Saved! Opening dashboard...';
+          setTimeout(() => {
+            chrome.tabs.create({ url: 'https://screencast-eight.vercel.app/dashboard' });
+            window.close();
+          }, 1000);
+          chrome.storage.session.remove(['uploadResult']);
+          return;
+        } else {
+          recordingInfo.textContent = 'Upload error: ' + (res.error || 'Unknown');
+          titleInput.style.display = '';
+          titleInput.value = generateTitle();
+          downloadBtn.parentElement.style.display = '';
+          discardBtn.style.display = '';
+          chrome.storage.session.remove(['uploadResult']);
+          return;
+        }
+      }
+      // Auto-upload still in progress — show manual controls after 30s
       recordingInfo.textContent = 'Saving to Screencast...';
       titleInput.style.display = 'none';
       downloadBtn.parentElement.style.display = 'none';
@@ -88,7 +112,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           downloadBtn.parentElement.style.display = '';
           discardBtn.style.display = '';
         }
-      }, 5000);
+      }, 30000);
     }
     return;
   }
@@ -502,7 +526,7 @@ async function stopRecording() {
     titleInput.style.display = 'none';
     downloadBtn.parentElement.style.display = 'none';
     discardBtn.style.display = 'none';
-    // Safety timeout: if auto-upload hasn't completed in 10s, show manual controls
+    // Safety timeout: if auto-upload hasn't completed in 60s, show manual controls
     setTimeout(() => {
       if (recordingInfo.textContent === 'Saving to Screencast...') {
         recordingInfo.textContent = 'Auto-save is taking longer than expected.';
@@ -511,7 +535,7 @@ async function stopRecording() {
         downloadBtn.parentElement.style.display = '';
         discardBtn.style.display = '';
       }
-    }, 10000);
+    }, 60000);
   }
 }
 
