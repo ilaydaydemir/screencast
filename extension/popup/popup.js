@@ -33,6 +33,9 @@ const titleInput = document.getElementById('title-input');
 const recordingInfo = document.getElementById('recording-info');
 const uploadProgress = document.getElementById('upload-progress');
 const uploadBar = document.getElementById('upload-bar');
+const transcriptToggle = document.getElementById('transcript-toggle');
+const transcriptPanel = document.getElementById('transcript-panel');
+const transcriptTextEl = document.getElementById('transcript-text');
 const authEmail = document.getElementById('auth-email');
 const authPassword = document.getElementById('auth-password');
 const signinBtn = document.getElementById('signin-btn');
@@ -54,6 +57,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   signinBtn.addEventListener('click', handleSignIn);
   signupBtn.addEventListener('click', handleSignUp);
   signoutBtn.addEventListener('click', handleSignOut);
+  transcriptToggle.addEventListener('click', toggleTranscript);
 
   // Check if already recording
   const state = await sendMessage({ action: 'getState' });
@@ -414,78 +418,57 @@ async function startRecording() {
   if (audioRafId) cancelAnimationFrame(audioRafId);
   if (audioContext) { audioContext.close(); audioContext = null; }
 
-  // For desktop/window modes, inject a content script on the active tab.
+  // All modes inject desktop-recorder.js into the active tab.
   // executeScript propagates user activation from this click → getDisplayMedia works.
-  if (currentMode === 'window' || currentMode === 'full-screen') {
-    // Check if active tab is injectable (not chrome://, about:, etc.)
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab || !tab.url || tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://') || tab.url.startsWith('about:') || tab.url.startsWith('edge://')) {
-      startBtn.disabled = false;
-      startBtn.textContent = 'Start Recording';
-      alert('Please navigate to a regular web page first (e.g. google.com). Chrome internal pages cannot be used for screen recording.');
-      return;
-    }
-
-    // Ask service worker to prepare (create recording row, get auth)
-    const prep = await sendMessage({
-      action: 'prepareDesktopRecording',
-      mode: currentMode,
-      cameraId: cameraSelect.value || null,
-      micId: micSelect.value || null,
-    });
-    if (!prep || !prep.success) {
-      startBtn.disabled = false;
-      startBtn.textContent = 'Start Recording';
-      alert(prep?.error || 'Failed to prepare recording');
-      return;
-    }
-    // Store config for the content script to read
-    await chrome.storage.session.set({
-      desktopRecordConfig: {
-        mode: currentMode,
-        cameraId: cameraSelect.value || null,
-        micId: micSelect.value || null,
-        recordingId: prep.recordingId,
-        userId: prep.userId,
-        authToken: prep.authToken,
-      },
-    });
-    // Inject the recording script (user activation propagates!)
-    try {
-      await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        files: ['content/desktop-recorder.js'],
-      });
-    } catch (err) {
-      startBtn.disabled = false;
-      startBtn.textContent = 'Start Recording';
-      alert('Cannot start recording on this page. Please navigate to a regular web page first.');
-      return;
-    }
-    // The content script will send 'desktopRecordingStarted' to the service worker.
-    // Show recording view immediately.
-    elapsedSeconds = 0;
-    showView('recording');
-    startTimerDisplay();
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab || !tab.url || tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://') || tab.url.startsWith('about:') || tab.url.startsWith('edge://')) {
+    startBtn.disabled = false;
+    startBtn.textContent = 'Start Recording';
+    alert('Please navigate to a regular web page first (e.g. google.com). Chrome internal pages cannot be used for recording.');
     return;
   }
 
-  const response = await sendMessage({
-    action: 'startRecording',
+  // Ask service worker to prepare (create recording row, get auth)
+  const prep = await sendMessage({
+    action: 'prepareDesktopRecording',
     mode: currentMode,
     cameraId: cameraSelect.value || null,
     micId: micSelect.value || null,
   });
-
-  if (response && response.success) {
-    elapsedSeconds = 0;
-    showView('recording');
-    startTimerDisplay();
-  } else {
+  if (!prep || !prep.success) {
     startBtn.disabled = false;
     startBtn.textContent = 'Start Recording';
-    alert(response?.error || 'Failed to start recording');
+    alert(prep?.error || 'Failed to prepare recording');
+    return;
   }
+  // Store config for the content script to read
+  await chrome.storage.session.set({
+    desktopRecordConfig: {
+      mode: currentMode,
+      cameraId: cameraSelect.value || null,
+      micId: micSelect.value || null,
+      recordingId: prep.recordingId,
+      userId: prep.userId,
+      authToken: prep.authToken,
+    },
+  });
+  // Inject the recording script (user activation propagates!)
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      files: ['content/desktop-recorder.js'],
+    });
+  } catch (err) {
+    startBtn.disabled = false;
+    startBtn.textContent = 'Start Recording';
+    alert('Cannot start recording on this page. Please navigate to a regular web page first.');
+    return;
+  }
+  // The content script will send 'desktopRecordingStarted' to the service worker.
+  // Show recording view immediately.
+  elapsedSeconds = 0;
+  showView('recording');
+  startTimerDisplay();
 }
 
 // === Timer Display ===
@@ -518,6 +501,7 @@ async function togglePause() {
 // === Stop Recording ===
 async function stopRecording() {
   clearInterval(timerInterval);
+  stopTranscript();
   const response = await sendMessage({ action: 'stopRecording' });
   if (response && response.success) {
     showView('done');
@@ -697,6 +681,79 @@ chrome.runtime.onMessage.addListener((message) => {
     }
   }
 });
+
+// === Live Transcript ===
+let recognition = null;
+let transcriptAccumulated = '';
+
+function toggleTranscript() {
+  if (recognition) {
+    stopTranscript();
+  } else {
+    startTranscript();
+  }
+}
+
+function startTranscript() {
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) {
+    alert('Speech recognition is not available in this browser.');
+    return;
+  }
+  transcriptAccumulated = '';
+  recognition = new SpeechRecognition();
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  recognition.lang = 'en-US';
+
+  recognition.onstart = () => {
+    transcriptToggle.classList.add('active');
+    transcriptPanel.style.display = 'block';
+    transcriptTextEl.textContent = '';
+  };
+
+  recognition.onresult = (e) => {
+    let interim = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      if (e.results[i].isFinal) {
+        transcriptAccumulated += e.results[i][0].transcript + ' ';
+      } else {
+        interim += e.results[i][0].transcript;
+      }
+    }
+    transcriptTextEl.textContent = transcriptAccumulated + interim;
+    transcriptPanel.scrollTop = transcriptPanel.scrollHeight;
+  };
+
+  recognition.onerror = (e) => {
+    if (e.error !== 'no-speech') {
+      console.warn('[Transcript] Error:', e.error);
+    }
+  };
+
+  recognition.onend = () => {
+    // Auto-restart if still active
+    if (recognition) {
+      try { recognition.start(); } catch {}
+    }
+  };
+
+  try {
+    recognition.start();
+  } catch (err) {
+    recognition = null;
+    console.warn('[Transcript] Failed to start:', err);
+  }
+}
+
+function stopTranscript() {
+  if (!recognition) return;
+  const r = recognition;
+  recognition = null; // prevent auto-restart in onend
+  r.onend = null;
+  try { r.stop(); } catch {}
+  transcriptToggle.classList.remove('active');
+}
 
 // === Helpers ===
 function showView(view) {

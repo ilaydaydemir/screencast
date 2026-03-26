@@ -28,33 +28,59 @@
   const { mode, cameraId, micId, recordingId, userId, authToken } = config;
 
   // --- Get screen stream (has user activation from popup click) ---
-  let screenStream;
-  try {
-    const displaySurface = mode === 'window' ? 'window' : 'monitor';
-    screenStream = await navigator.mediaDevices.getDisplayMedia({
-      video: { displaySurface },
-      audio: true,
-      // Don't pre-select a tab — we want the window/screen picker
-      preferCurrentTab: false,
-      // Allow switching surfaces mid-recording
-      surfaceSwitching: 'include',
-      // Exclude current tab from tab list to discourage tab selection
-      selfBrowserSurface: 'exclude',
-    });
-  } catch (err) {
-    console.error('[DesktopRec] getDisplayMedia failed:', err);
-    window._screencastDesktopRecorderActive = false;
-    chrome.runtime.sendMessage({ action: 'desktopRecordingFailed', error: err.message });
-    return;
+  let screenStream = null;
+
+  if (mode !== 'camera-only') {
+    try {
+      const constraints = { audio: true, surfaceSwitching: 'include' };
+      if (mode === 'tab') {
+        // Prefer current tab — Chrome shows a "Share this tab?" dialog
+        constraints.preferCurrentTab = true;
+        constraints.video = true;
+        constraints.selfBrowserSurface = 'include';
+      } else if (mode === 'window') {
+        constraints.preferCurrentTab = false;
+        constraints.video = { displaySurface: 'window' };
+        constraints.selfBrowserSurface = 'exclude';
+      } else {
+        // full-screen
+        constraints.preferCurrentTab = false;
+        constraints.video = { displaySurface: 'monitor' };
+        constraints.selfBrowserSurface = 'exclude';
+      }
+      screenStream = await navigator.mediaDevices.getDisplayMedia(constraints);
+    } catch (err) {
+      console.error('[DesktopRec] getDisplayMedia failed:', err);
+      window._screencastDesktopRecorderActive = false;
+      chrome.runtime.sendMessage({ action: 'desktopRecordingFailed', error: err.message });
+      return;
+    }
+    const videoTrack = screenStream.getVideoTracks()[0];
+    const trackSettings = videoTrack.getSettings();
+    console.log('[DesktopRec] Capture type:', trackSettings.displaySurface,
+      'dimensions:', trackSettings.width, 'x', trackSettings.height,
+      'frameRate:', trackSettings.frameRate);
   }
 
-  // --- Log what was actually selected ---
-  const videoTrack = screenStream.getVideoTracks()[0];
-  const trackSettings = videoTrack.getSettings();
-  console.log('[DesktopRec] Capture type:', trackSettings.displaySurface,
-    'dimensions:', trackSettings.width, 'x', trackSettings.height,
-    'frameRate:', trackSettings.frameRate);
-  // displaySurface: 'monitor' = screen, 'window' = window, 'browser' = Chrome tab
+  // --- Get camera stream (camera-only mode, or for overlay reference) ---
+  let cameraStream = null;
+  if (mode === 'camera-only' && cameraId) {
+    try {
+      cameraStream = await navigator.mediaDevices.getUserMedia({
+        video: { deviceId: { exact: cameraId } },
+        audio: false,
+      });
+    } catch (err) {
+      console.warn('[DesktopRec] Camera failed:', err.message);
+    }
+  }
+
+  if (mode === 'camera-only' && !cameraStream) {
+    // No camera available — abort
+    window._screencastDesktopRecorderActive = false;
+    chrome.runtime.sendMessage({ action: 'desktopRecordingFailed', error: 'No camera available for Camera Only mode.' });
+    return;
+  }
 
   // --- Get mic stream ---
   let micStream = null;
@@ -72,7 +98,7 @@
   const audioContext = new AudioContext();
   const destination = audioContext.createMediaStreamDestination();
 
-  if (screenStream.getAudioTracks().length > 0) {
+  if (screenStream && screenStream.getAudioTracks().length > 0) {
     const screenSource = audioContext.createMediaStreamSource(
       new MediaStream(screenStream.getAudioTracks())
     );
@@ -84,9 +110,13 @@
     micSource.connect(destination);
   }
 
-  // --- Composite stream (screen video + mixed audio) ---
+  // --- Composite stream ---
   const compositeStream = new MediaStream();
-  screenStream.getVideoTracks().forEach(t => compositeStream.addTrack(t));
+  if (mode === 'camera-only') {
+    cameraStream.getVideoTracks().forEach(t => compositeStream.addTrack(t));
+  } else {
+    screenStream.getVideoTracks().forEach(t => compositeStream.addTrack(t));
+  }
   destination.stream.getAudioTracks().forEach(t => compositeStream.addTrack(t));
 
   // --- MediaRecorder ---
@@ -118,7 +148,8 @@
     const blob = new Blob(chunks, { type: mimeType });
     console.log('[DesktopRec] Recording stopped, blob size:', blob.size);
     // Stop media tracks (but keep keepalive port open during upload)
-    screenStream.getTracks().forEach(t => t.stop());
+    if (screenStream) screenStream.getTracks().forEach(t => t.stop());
+    if (cameraStream) cameraStream.getTracks().forEach(t => t.stop());
     if (micStream) micStream.getTracks().forEach(t => t.stop());
     audioContext.close().catch(() => {});
 
@@ -207,7 +238,7 @@
 
   // --- Start recording ---
   recorder.start(1000);
-  console.log('[DesktopRec] Recording started, mode:', mode, 'displaySurface:', trackSettings.displaySurface);
+  console.log('[DesktopRec] Recording started, mode:', mode);
 
   // Notify service worker (include all state so SW can restore after sleep)
   chrome.runtime.sendMessage({ action: 'desktopRecordingStarted', recordingId, cameraId: cameraId || null, mode });
@@ -234,16 +265,19 @@
     }
   });
 
-  // --- Handle user clicking Chrome's "Stop sharing" button ---
-  screenStream.getVideoTracks()[0].onended = () => {
-    if (recorder.state !== 'inactive') recorder.stop();
-    chrome.runtime.sendMessage({ action: 'desktopRecordingStopped' });
-  };
+  // --- Handle user clicking Chrome's "Stop sharing" button (screen modes only) ---
+  if (screenStream) {
+    screenStream.getVideoTracks()[0].onended = () => {
+      if (recorder.state !== 'inactive') recorder.stop();
+      chrome.runtime.sendMessage({ action: 'desktopRecordingStopped' });
+    };
+  }
 
   function cleanup() {
     clearInterval(keepAliveInterval);
     try { keepAlivePort.disconnect(); } catch {}
-    screenStream.getTracks().forEach(t => t.stop());
+    if (screenStream) screenStream.getTracks().forEach(t => t.stop());
+    if (cameraStream) cameraStream.getTracks().forEach(t => t.stop());
     if (micStream) micStream.getTracks().forEach(t => t.stop());
     audioContext.close().catch(() => {});
     window._screencastDesktopRecorderActive = false;
