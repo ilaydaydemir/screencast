@@ -434,54 +434,83 @@ async function startRecording() {
   if (audioRafId) cancelAnimationFrame(audioRafId);
   if (audioContext) { audioContext.close(); audioContext = null; }
 
-  // All modes inject desktop-recorder.js into the active tab.
-  // executeScript propagates user activation from this click → getDisplayMedia works.
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab || !tab.url || tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://') || tab.url.startsWith('about:') || tab.url.startsWith('edge://')) {
+  const isInternalPage = !tab?.url ||
+    tab.url.startsWith('chrome://') ||
+    tab.url.startsWith('chrome-extension://') ||
+    tab.url.startsWith('about:') ||
+    tab.url.startsWith('edge://');
+
+  // Tab mode needs content script injection — must be on a real page
+  if (currentMode === 'tab' && isInternalPage) {
     startBtn.disabled = false;
     startBtn.textContent = 'Start Recording';
-    alert('Please navigate to a regular web page first (e.g. google.com). Chrome internal pages cannot be used for recording.');
+    alert('Switch to Screen mode to record from this page, or navigate to a regular web page first for Tab mode.');
     return;
   }
 
-  // Ask service worker to prepare (create recording row, get auth)
-  const prep = await sendMessage({
-    action: 'prepareDesktopRecording',
-    mode: currentMode,
-    cameraId: cameraSelect.value || null,
-    micId: micSelect.value || null,
-  });
-  if (!prep || !prep.success) {
-    startBtn.disabled = false;
-    startBtn.textContent = 'Start Recording';
-    alert(prep?.error || 'Failed to prepare recording');
-    return;
-  }
-  // Store config for the content script to read
-  await chrome.storage.session.set({
-    desktopRecordConfig: {
+  if (!isInternalPage) {
+    // Normal page: inject content script (user activation propagates → getDisplayMedia works)
+    const prep = await sendMessage({
+      action: 'prepareDesktopRecording',
       mode: currentMode,
       cameraId: cameraSelect.value || null,
       micId: micSelect.value || null,
-      recordingId: prep.recordingId,
-      userId: prep.userId,
-      authToken: prep.authToken,
-    },
-  });
-  // Inject the recording script (user activation propagates!)
-  try {
-    await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      files: ['content/desktop-recorder.js'],
     });
-  } catch (err) {
-    startBtn.disabled = false;
-    startBtn.textContent = 'Start Recording';
-    alert('Cannot start recording on this page. Please navigate to a regular web page first.');
-    return;
+    if (!prep || !prep.success) {
+      startBtn.disabled = false;
+      startBtn.textContent = 'Start Recording';
+      alert(prep?.error || 'Failed to prepare recording');
+      return;
+    }
+    await chrome.storage.session.set({
+      desktopRecordConfig: {
+        mode: currentMode,
+        cameraId: cameraSelect.value || null,
+        micId: micSelect.value || null,
+        recordingId: prep.recordingId,
+        userId: prep.userId,
+        authToken: prep.authToken,
+      },
+    });
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ['content/desktop-recorder.js'],
+      });
+    } catch (err) {
+      startBtn.disabled = false;
+      startBtn.textContent = 'Start Recording';
+      alert('Cannot start recording on this page. Please navigate to a regular web page first.');
+      return;
+    }
+  } else {
+    // Internal page (new tab, chrome://*, etc.): use chooseDesktopMedia from popup
+    // This shows Chrome's screen picker without needing a content script
+    const sources = currentMode === 'window' ? ['window', 'screen'] : ['screen', 'window'];
+    const streamId = await new Promise((resolve) => {
+      chrome.desktopCapture.chooseDesktopMedia(sources, (id) => resolve(id || null));
+    });
+    if (!streamId) {
+      startBtn.disabled = false;
+      startBtn.textContent = 'Start Recording';
+      return; // user cancelled picker
+    }
+    const result = await sendMessage({
+      action: 'startRecording',
+      mode: currentMode,
+      desktopStreamId: streamId,
+      cameraId: cameraSelect.value || null,
+      micId: micSelect.value || null,
+    });
+    if (!result || !result.success) {
+      startBtn.disabled = false;
+      startBtn.textContent = 'Start Recording';
+      alert(result?.error || 'Failed to start recording');
+      return;
+    }
   }
-  // The content script will send 'desktopRecordingStarted' to the service worker.
-  // Show recording view immediately.
+
   elapsedSeconds = 0;
   showView('recording');
   startTimerDisplay();
