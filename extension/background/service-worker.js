@@ -524,31 +524,8 @@ async function handleStartRecording({ mode, cameraId, micId, desktopStreamId, so
       overlayWindowId = win.id;
     } catch (e) { console.warn('[SW] Overlay window failed:', e); }
 
-    // Inject bubble — prefer the source tab, fall back to any real webpage
-    const injectTab = await findInjectableTab(tab);
-    if (injectTab) {
-      try {
-        await injectBubbleAndToolbar(injectTab.id, cameraId, 0, false);
-        bubbleTabId = injectTab.id;
-        // If the bubble is on a different tab than the source, bring it to front so user sees controls
-        if (injectTab.id !== tab.id) {
-          await chrome.tabs.update(injectTab.id, { active: true });
-          await chrome.windows.update(injectTab.windowId, { focused: true });
-        }
-      } catch (e) { console.warn('[SW] Bubble injection failed:', e); }
-    } else {
-      // No injectable tab — open a minimal control page
-      const controlTab = await chrome.tabs.create({
-        url: 'https://www.google.com/search?q=recording+in+progress',
-        active: true,
-      });
-      // Wait for it to load, then inject
-      await new Promise(r => setTimeout(r, 2000));
-      try {
-        await injectBubbleAndToolbar(controlTab.id, cameraId, 0, false);
-        bubbleTabId = controlTab.id;
-      } catch (e) { console.warn('[SW] Fallback bubble injection failed:', e); }
-    }
+    // Overlay window handles the camera+controls UI (works across all tabs and chrome:// pages).
+    // No content-script injection needed — prevents page crashes from CSP/iframe conflicts.
 
     startTimer();
     recordingState = 'recording';
