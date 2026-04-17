@@ -83,11 +83,14 @@ document.addEventListener('DOMContentLoaded', async () => {
       const res = stored.uploadResult;
       if (res && (Date.now() - res.ts) < 120000) {
         if (res.success) {
-          recordingInfo.textContent = 'Saved! Opening dashboard...';
+          recordingInfo.textContent = 'Saved! Opening recording...';
+          const targetUrl = res.recordingId
+            ? `https://screencast-eight.vercel.app/recordings/${res.recordingId}`
+            : 'https://screencast-eight.vercel.app/dashboard';
           setTimeout(() => {
-            chrome.tabs.create({ url: 'https://screencast-eight.vercel.app/dashboard' });
+            chrome.tabs.create({ url: targetUrl });
             window.close();
-          }, 1000);
+          }, 800);
           chrome.storage.session.remove(['uploadResult']);
           return;
         } else {
@@ -642,11 +645,14 @@ chrome.runtime.onMessage.addListener((message) => {
     discardBtn.style.display = 'none';
   }
   if (message.action === 'autoUploadComplete') {
-    recordingInfo.textContent = 'Saved! Opening dashboard...';
+    recordingInfo.textContent = 'Saved! Opening recording...';
+    const targetUrl = message.recordingId
+      ? `https://screencast-eight.vercel.app/recordings/${message.recordingId}`
+      : 'https://screencast-eight.vercel.app/dashboard';
     setTimeout(() => {
-      chrome.tabs.create({ url: 'https://screencast-eight.vercel.app/dashboard' });
+      chrome.tabs.create({ url: targetUrl });
       window.close();
-    }, 1000);
+    }, 800);
   }
   if (message.action === 'autoUploadFailed') {
     // Show manual controls so user can download or retry

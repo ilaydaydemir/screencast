@@ -291,7 +291,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       isDesktopContentScript = false;
       if (message.success && !message.discarded) {
         lastRecordingId = message.recordingId;
-        chrome.storage.session.set({ uploadResult: { success: true, ts: Date.now() } }).catch(() => {});
+        chrome.storage.session.set({ uploadResult: { success: true, recordingId: (result?.recordingId || lastRecordingId || null), ts: Date.now() } }).catch(() => {});
         chrome.runtime.sendMessage({ action: 'autoUploadComplete' }).catch(() => {});
       } else if (message.discarded) {
         // Delete orphaned recording row
@@ -508,24 +508,14 @@ async function handleStartRecording({ mode, cameraId, micId, desktopStreamId, so
       }
     }
 
-    // Offscreen document is invisible — no refocus needed.
-    // Open floating overlay window (camera bubble + controls) — visible on all pages including chrome://
+    // Inject bubble + toolbar ON the user's page (Loom-style). Content script gets
+    // the camera via getUserMedia directly — no iframe, no CSP conflicts.
     try {
-      const url = chrome.runtime.getURL('overlay/overlay.html') + '?cam=' + encodeURIComponent(cameraId || '') + '&elapsed=0';
-      const win = await chrome.windows.create({
-        url,
-        type: 'popup',
-        width: 180,
-        height: cameraId ? 210 : 70,
-        top: 60,
-        left: 60,
-        focused: false,
-      });
-      overlayWindowId = win.id;
-    } catch (e) { console.warn('[SW] Overlay window failed:', e); }
-
-    // Overlay window handles the camera+controls UI (works across all tabs and chrome:// pages).
-    // No content-script injection needed — prevents page crashes from CSP/iframe conflicts.
+      if (tab.url && !tab.url.startsWith('chrome://') && !tab.url.startsWith('chrome-extension://') && !tab.url.startsWith('about:')) {
+        await injectBubbleAndToolbar(tab.id, cameraId, 0, false);
+        bubbleTabId = tab.id;
+      }
+    } catch (e) { console.warn('[SW] Bubble injection failed:', e); }
 
     startTimer();
     recordingState = 'recording';
@@ -714,11 +704,21 @@ async function injectBubbleAndToolbar(tabId, cameraId, elapsed, isPaused) {
         });
 
         if (camId) {
-          const iframe = document.createElement('iframe');
-          iframe.src = chrome.runtime.getURL('camera/camera.html?d=' + encodeURIComponent(camId));
-          iframe.style.cssText = 'width:100%;height:100%;border:none;display:block;border-radius:50%;';
-          iframe.allow = 'camera *';
-          bubble.appendChild(iframe);
+          // Direct <video> + getUserMedia — no iframe, works on strict-CSP sites like clay.com
+          const vid = document.createElement('video');
+          vid.autoplay = true;
+          vid.playsInline = true;
+          vid.muted = true;
+          bubble.appendChild(vid);
+          navigator.mediaDevices.getUserMedia({
+            video: { deviceId: { exact: camId }, width: { ideal: 640 }, height: { ideal: 640 } },
+          }).then(s => {
+            vid.srcObject = s;
+            host._stream = s;
+          }).catch(() => {
+            bubble.style.background = '#333';
+            bubbleWrap.style.display = 'none';
+          });
         } else {
           bubble.style.background = '#333';
         }
@@ -809,15 +809,13 @@ async function removeBubble(tabId) {
   } catch {}
 }
 
-// === Tab Recording ===
-async function startTabRecording(tab, cameraId, micId, recordingId, auth) {
+// DEAD CODE - kept only for reference, no caller
+async function _dead_startTabRecording(tab, cameraId, micId, recordingId, auth) {
   await injectBubbleAndToolbar(tab.id, cameraId, 0, false);
   bubbleTabId = tab.id;
 
-  // Use consumerTabId so the pinned recorder tab can consume the stream
   const streamId = await chrome.tabCapture.getMediaStreamId({
     targetTabId: tab.id,
-    consumerTabId: recorderTabId,
   });
 
   const result = await forwardToRecorderTab({
@@ -1000,7 +998,7 @@ async function assembleAndFinalize(duration, mode) {
       // Clean up IDB + close recorder tab
       await forwardToRecorderTab({ action: 'discardRecording' });
       await closeRecorderTab();
-      chrome.storage.session.set({ uploadResult: { success: true, ts: Date.now() } }).catch(() => {});
+      chrome.storage.session.set({ uploadResult: { success: true, recordingId: (result?.recordingId || lastRecordingId || null), ts: Date.now() } }).catch(() => {});
       chrome.runtime.sendMessage({ action: 'autoUploadComplete', recordingId: completedId }).catch(() => {});
       return;
     }
@@ -1040,7 +1038,7 @@ async function autoUpload(duration, mode) {
     await chrome.storage.session.remove(['lastRecordingId']);
     await closeRecorderTab();
     persistRecordingState();
-    chrome.storage.session.set({ uploadResult: { success: true, ts: Date.now() } }).catch(() => {});
+    chrome.storage.session.set({ uploadResult: { success: true, recordingId: (result?.recordingId || lastRecordingId || null), ts: Date.now() } }).catch(() => {});
     chrome.runtime.sendMessage({ action: 'autoUploadComplete', recordingId: result.recordingId }).catch(() => {});
     return;
   }
@@ -1054,7 +1052,7 @@ async function autoUpload(duration, mode) {
     await chrome.storage.session.remove(['lastRecordingId']);
     await closeRecorderTab();
     persistRecordingState();
-    chrome.storage.session.set({ uploadResult: { success: true, ts: Date.now() } }).catch(() => {});
+    chrome.storage.session.set({ uploadResult: { success: true, recordingId: (result?.recordingId || lastRecordingId || null), ts: Date.now() } }).catch(() => {});
     chrome.runtime.sendMessage({ action: 'autoUploadComplete', recordingId: result.recordingId }).catch(() => {});
     return;
   }
@@ -1069,7 +1067,7 @@ async function autoUpload(duration, mode) {
       await chrome.storage.session.remove(['lastRecordingId']);
       await closeRecorderTab();
       persistRecordingState();
-      chrome.storage.session.set({ uploadResult: { success: true, ts: Date.now() } }).catch(() => {});
+      chrome.storage.session.set({ uploadResult: { success: true, recordingId: (result?.recordingId || lastRecordingId || null), ts: Date.now() } }).catch(() => {});
       chrome.runtime.sendMessage({ action: 'autoUploadComplete', recordingId: retry.recordingId }).catch(() => {});
       return;
     }
