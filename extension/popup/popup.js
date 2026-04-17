@@ -75,17 +75,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     elapsedSeconds = state.elapsed || 0;
     showView('done');
     if (state.uploadError) {
-      // Upload already failed — show manual controls with auto-generated title
       recordingInfo.textContent = 'Upload error: ' + state.uploadError;
       titleInput.value = generateTitle();
+      addResetButton();
     } else {
-      // Check if upload already completed while popup was closed
       const stored = await chrome.storage.session.get(['uploadResult']);
       const res = stored.uploadResult;
       if (res && (Date.now() - res.ts) < 120000) {
-        // Result is fresh (< 2 min old)
         if (res.success) {
-          showView('done');
           recordingInfo.textContent = 'Saved! Opening dashboard...';
           setTimeout(() => {
             chrome.tabs.create({ url: 'https://screencast-eight.vercel.app/dashboard' });
@@ -100,23 +97,27 @@ document.addEventListener('DOMContentLoaded', async () => {
           downloadBtn.parentElement.style.display = '';
           discardBtn.style.display = '';
           chrome.storage.session.remove(['uploadResult']);
+          addResetButton();
           return;
         }
       }
-      // Auto-upload still in progress — show manual controls after 30s
       recordingInfo.textContent = 'Saving to Screencast...';
       titleInput.style.display = 'none';
       downloadBtn.parentElement.style.display = 'none';
       discardBtn.style.display = 'none';
+      // Shorter timeout (10s) and always show reset button
       setTimeout(() => {
         if (recordingInfo.textContent === 'Saving to Screencast...') {
-          recordingInfo.textContent = 'Upload may have failed. Use controls below.';
+          recordingInfo.textContent = 'Upload taking longer than expected.';
           titleInput.style.display = '';
           titleInput.value = generateTitle();
           downloadBtn.parentElement.style.display = '';
           discardBtn.style.display = '';
+          addResetButton();
         }
-      }, 30000);
+      }, 10000);
+      // Also show reset button immediately so user can always escape
+      addResetButton();
     }
     return;
   }
@@ -443,11 +444,19 @@ async function startRecording() {
   if (audioRafId) cancelAnimationFrame(audioRafId);
   if (audioContext) { audioContext.close(); audioContext = null; }
 
+  // Get the user's active tab BEFORE sending to SW (popup doesn't have a tab of its own)
+  let sourceTabId = null;
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    sourceTabId = tab?.id || null;
+  } catch {}
+
   if (currentMode === 'camera-only' || currentMode === 'tab') {
     // Tab and camera-only: no picker, SW handles capture directly
     const result = await sendMessage({
       action: 'startRecording',
       mode: currentMode,
+      sourceTabId,
       cameraId: cameraSelect.value || null,
       micId: micSelect.value || null,
     });
@@ -483,6 +492,7 @@ async function startRecording() {
   const result = await sendMessage({
     action: 'startRecording',
     mode: currentMode,
+    sourceTabId,
     desktopStreamId: streamId,
     cameraId: cameraSelect.value || null,
     micId: micSelect.value || null,
@@ -808,6 +818,29 @@ async function sendMessage(msg) {
     console.error('Message failed:', err);
     return null;
   }
+}
+
+// Reset button — user can always escape stuck states
+function addResetButton() {
+  if (document.getElementById('reset-btn')) return;
+  const btn = document.createElement('button');
+  btn.id = 'reset-btn';
+  btn.textContent = 'Start New Recording';
+  btn.style.cssText = 'width:100%;padding:12px;background:#e54545;color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;margin-top:12px;';
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    btn.textContent = 'Resetting...';
+    await sendMessage({ action: 'forceReset' });
+    await chrome.storage.session.remove(['uploadResult', '_swState', 'lastRecordingId']);
+    showView('setup');
+    startBtn.disabled = false;
+    startBtn.textContent = 'Start Recording';
+    btn.remove();
+    await enumerateDevices();
+    setupModeAndDeviceListeners();
+    sendMessage({ action: 'ensureRecorderReady' });
+  });
+  doneView.appendChild(btn);
 }
 
 function generateTitle() {

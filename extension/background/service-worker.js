@@ -123,6 +123,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       ensureRecorderTab().then(() => sendResponse({ success: true })).catch(() => sendResponse({ success: false }));
       return true;
 
+    case 'forceReset':
+      // User pressed reset button — clean up everything and return to idle
+      (async () => {
+        await resetToIdleAndCleanup('User reset');
+        sendResponse({ success: true });
+      })();
+      return true;
+
     case 'startRecording':
       handleStartRecording(message).then(sendResponse);
       return true;
@@ -421,8 +429,8 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 });
 
 // === Start Recording ===
-async function handleStartRecording({ mode, cameraId, micId, desktopStreamId }) {
-  console.log('[SW] handleStartRecording:', mode, 'camera:', cameraId, 'mic:', micId, 'desktopStreamId:', !!desktopStreamId);
+async function handleStartRecording({ mode, cameraId, micId, desktopStreamId, sourceTabId }) {
+  console.log('[SW] handleStartRecording:', mode, 'camera:', cameraId, 'mic:', micId, 'desktopStreamId:', !!desktopStreamId, 'sourceTabId:', sourceTabId);
   currentMode = mode;
   currentCameraId = cameraId;
   elapsedSeconds = 0;
@@ -430,7 +438,18 @@ async function handleStartRecording({ mode, cameraId, micId, desktopStreamId }) 
   isDesktopContentScript = false;
 
   try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    // Prefer explicit sourceTabId from popup (popup doesn't have a tab, so SW query is ambiguous)
+    let tab;
+    if (sourceTabId) {
+      try { tab = await chrome.tabs.get(sourceTabId); } catch {}
+    }
+    if (!tab) {
+      const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+      tab = activeTab;
+    }
+    if (!tab) {
+      return { success: false, error: 'No active tab found' };
+    }
     activeTabId = tab.id;
 
     if (!recorderTabReady) await ensureRecorderTab();
@@ -1002,7 +1021,7 @@ async function autoUpload(duration, mode) {
   const auth = await chrome.storage.local.get(['authToken', 'userId']);
   if (!auth.authToken || !auth.userId) {
     console.log('[SW] autoUpload: NOT SIGNED IN');
-    chrome.runtime.sendMessage({ action: 'autoUploadFailed', error: 'Not signed in' }).catch(() => {});
+    await resetToIdleAndCleanup('Not signed in');
     return;
   }
   console.log('[SW] autoUpload: auth OK, userId:', auth.userId);
@@ -1021,6 +1040,7 @@ async function autoUpload(duration, mode) {
     lastRecordingId = null;
     await chrome.storage.session.remove(['lastRecordingId']);
     await closeRecorderTab();
+    persistRecordingState();
     chrome.storage.session.set({ uploadResult: { success: true, ts: Date.now() } }).catch(() => {});
     chrome.runtime.sendMessage({ action: 'autoUploadComplete', recordingId: result.recordingId }).catch(() => {});
     return;
@@ -1034,6 +1054,7 @@ async function autoUpload(duration, mode) {
     lastRecordingId = null;
     await chrome.storage.session.remove(['lastRecordingId']);
     await closeRecorderTab();
+    persistRecordingState();
     chrome.storage.session.set({ uploadResult: { success: true, ts: Date.now() } }).catch(() => {});
     chrome.runtime.sendMessage({ action: 'autoUploadComplete', recordingId: result.recordingId }).catch(() => {});
     return;
@@ -1048,6 +1069,7 @@ async function autoUpload(duration, mode) {
       lastRecordingId = null;
       await chrome.storage.session.remove(['lastRecordingId']);
       await closeRecorderTab();
+      persistRecordingState();
       chrome.storage.session.set({ uploadResult: { success: true, ts: Date.now() } }).catch(() => {});
       chrome.runtime.sendMessage({ action: 'autoUploadComplete', recordingId: retry.recordingId }).catch(() => {});
       return;
@@ -1056,8 +1078,54 @@ async function autoUpload(duration, mode) {
   } else {
     uploadError = result?.error || 'Upload failed';
   }
-  chrome.storage.session.set({ uploadResult: { success: false, error: uploadError, ts: Date.now() } }).catch(() => {});
-  chrome.runtime.sendMessage({ action: 'autoUploadFailed', error: uploadError }).catch(() => {});
+  // UPLOAD FAILED — reset to idle so user can start a new recording
+  await resetToIdleAndCleanup(uploadError);
+}
+
+// === Reset state to idle after terminal upload failure ===
+// CRITICAL: without this, recordingState stays 'stopped' forever and popup is stuck
+async function resetToIdleAndCleanup(errorMsg) {
+  console.log('[SW] resetToIdleAndCleanup:', errorMsg);
+  uploadError = errorMsg;
+  clearInterval(timerInterval);
+
+  // Delete the orphan "processing" DB row so dashboard isn't cluttered
+  if (lastRecordingId) {
+    try {
+      const auth = await chrome.storage.local.get(['authToken']);
+      if (auth.authToken) {
+        await fetch(`${SUPABASE_URL}/rest/v1/recordings?id=eq.${lastRecordingId}`, {
+          method: 'DELETE',
+          headers: { 'apikey': SUPABASE_ANON_KEY, 'Authorization': `Bearer ${auth.authToken}` },
+        });
+      }
+    } catch {}
+    lastRecordingId = null;
+  }
+
+  // Clean up IDB and recorder tab
+  try { await forwardToRecorderTab({ action: 'discardRecording' }); } catch {}
+  try { await closeRecorderTab(); } catch {}
+
+  // Clean up bubble
+  if (bubbleTabId) {
+    removeBubble(bubbleTabId).catch(() => {});
+    bubbleTabId = null;
+  }
+
+  // Reset state
+  recordingState = 'idle';
+  currentMode = null;
+  currentCameraId = null;
+  activeTabId = null;
+  elapsedSeconds = 0;
+  isDesktopContentScript = false;
+  await chrome.storage.session.remove(['lastRecordingId', '_swState']);
+  persistRecordingState();
+
+  // Notify popup
+  chrome.storage.session.set({ uploadResult: { success: false, error: errorMsg, ts: Date.now() } }).catch(() => {});
+  chrome.runtime.sendMessage({ action: 'autoUploadFailed', error: errorMsg }).catch(() => {});
 }
 
 // === Cancel Recording (stop + discard, used by toolbar discard button) ===
