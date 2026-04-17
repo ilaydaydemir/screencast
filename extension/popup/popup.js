@@ -429,8 +429,8 @@ async function startAudioLevel(deviceId) {
 }
 
 // === Start Recording ===
-// ALL modes: popup → SW → recorder tab → getDisplayMedia/getUserMedia
-// No content scripts, no chooseDesktopMedia, no tabCapture. One path.
+// chooseDesktopMedia in popup (has user activation) → stream ID → recorder tab
+// getUserMedia with stream ID does NOT need user activation — always works.
 async function startRecording() {
   startBtn.disabled = true;
   startBtn.textContent = 'Starting...';
@@ -442,9 +442,47 @@ async function startRecording() {
   if (audioRafId) cancelAnimationFrame(audioRafId);
   if (audioContext) { audioContext.close(); audioContext = null; }
 
+  if (currentMode === 'camera-only') {
+    const result = await sendMessage({
+      action: 'startRecording',
+      mode: 'camera-only',
+      cameraId: cameraSelect.value || null,
+      micId: micSelect.value || null,
+    });
+    if (!result || !result.success) {
+      startBtn.disabled = false;
+      startBtn.textContent = 'Start Recording';
+      alert(result?.error || 'Failed to start camera recording');
+      return;
+    }
+    window.close();
+    return;
+  }
+
+  // Screen/Window/Tab: popup shows Chrome's native picker via chooseDesktopMedia
+  // This works from ANY page (chrome://newtab, internal pages, etc.)
+  let streamId;
+  try {
+    streamId = await new Promise((resolve, reject) => {
+      chrome.desktopCapture.chooseDesktopMedia(
+        ['screen', 'window', 'tab'],
+        (id) => {
+          if (id) resolve(id);
+          else reject(new Error('cancelled'));
+        }
+      );
+    });
+  } catch {
+    startBtn.disabled = false;
+    startBtn.textContent = 'Start Recording';
+    return;
+  }
+
+  // Stream ID obtained — send to SW → recorder tab uses getUserMedia (no activation needed)
   const result = await sendMessage({
     action: 'startRecording',
     mode: currentMode,
+    desktopStreamId: streamId,
     cameraId: cameraSelect.value || null,
     micId: micSelect.value || null,
   });
