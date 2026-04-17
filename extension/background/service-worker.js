@@ -119,6 +119,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       })();
       return true;
 
+    case 'ensureRecorderReady':
+      ensureRecorderTab().then(() => sendResponse({ success: true })).catch(() => sendResponse({ success: false }));
+      return true;
+
     case 'startRecording':
       handleStartRecording(message).then(sendResponse);
       return true;
@@ -429,9 +433,10 @@ async function handleStartRecording({ mode, cameraId, micId, desktopStreamId }) 
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     activeTabId = tab.id;
 
-    // CRITICAL: ensure recorder tab + forward message BEFORE any network calls
+    // CRITICAL: forward to recorder tab BEFORE any network calls
     // User activation from popup expires in ~5s — DB row creation would waste it
-    await ensureRecorderTab();
+    // Recorder tab was pre-warmed when popup opened (ensureRecorderReady)
+    if (!recorderTabReady) await ensureRecorderTab();
 
     // Forward to recorder tab IMMEDIATELY (user activation still alive)
     const result = await forwardToRecorderTab({

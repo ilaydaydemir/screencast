@@ -129,6 +129,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     showUserInfo(auth.userEmail || 'Signed in');
     await enumerateDevices();
     setupModeAndDeviceListeners();
+    sendMessage({ action: 'ensureRecorderReady' });
   } else {
     // Not logged in - try sync from web app first
     const synced = await syncAuthFromWebApp();
@@ -138,6 +139,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       showUserInfo(auth2.userEmail || 'Signed in');
       await enumerateDevices();
       setupModeAndDeviceListeners();
+      sendMessage({ action: 'ensureRecorderReady' });
     } else {
       showView('auth');
     }
