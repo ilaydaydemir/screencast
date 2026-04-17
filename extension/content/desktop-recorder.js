@@ -81,6 +81,18 @@
   }
   const { mode, cameraId, micId, recordingId, userId, authToken } = config;
 
+  // --- Wait for tab to become visible (injected as background tab from internal page) ---
+  if (document.visibilityState !== 'visible') {
+    await new Promise(resolve => {
+      document.addEventListener('visibilitychange', function handler() {
+        if (document.visibilityState === 'visible') {
+          document.removeEventListener('visibilitychange', handler);
+          resolve();
+        }
+      });
+    });
+  }
+
   // --- Get screen stream (has user activation from popup click) ---
   let screenStream = null;
 
