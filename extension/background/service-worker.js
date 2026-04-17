@@ -506,19 +506,26 @@ async function handleStartRecording({ mode, cameraId, micId, desktopStreamId }) 
       }
     }
 
+    // Switch focus back to the user's original tab (Chrome may have switched to recorder)
+    try {
+      await chrome.tabs.update(tab.id, { active: true });
+      await chrome.windows.update(tab.windowId, { focused: true });
+    } catch (e) { console.warn('[SW] Could not refocus original tab:', e); }
+
     // Inject bubble on active tab (skip internal pages)
     try {
       if (tab.url && !tab.url.startsWith('chrome://') && !tab.url.startsWith('chrome-extension://') && !tab.url.startsWith('about:')) {
         await injectBubbleAndToolbar(tab.id, cameraId, 0, false);
         bubbleTabId = tab.id;
       }
-    } catch {}
+    } catch (e) { console.warn('[SW] Bubble injection failed:', e); }
 
     startTimer();
     recordingState = 'recording';
     persistRecordingState();
     return { success: true };
   } catch (err) {
+    console.error('[SW] handleStartRecording error:', err);
     return { success: false, error: err.message };
   }
 }
