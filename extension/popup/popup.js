@@ -489,65 +489,23 @@ async function startRecording() {
       return;
     }
   } else {
-    // Internal page: open a temporary regular tab, inject content script there
-    let tempTab;
-    try {
-      tempTab = await chrome.tabs.create({ url: 'https://www.google.com', active: true });
-      await new Promise((resolve) => {
-        const listener = (tabId, info) => {
-          if (tabId === tempTab.id && info.status === 'complete') {
-            chrome.tabs.onUpdated.removeListener(listener);
-            resolve();
-          }
-        };
-        chrome.tabs.onUpdated.addListener(listener);
-      });
-    } catch {
-      startBtn.disabled = false;
-      startBtn.textContent = 'Start Recording';
-      alert('Failed to open a page for recording.');
-      return;
-    }
-    const prep = await sendMessage({
-      action: 'prepareDesktopRecording',
+    // Internal page: delegate entirely to SW (popup closes when new tab opens)
+    const result = await sendMessage({
+      action: 'startFromInternalPage',
       mode: currentMode,
       cameraId: cameraSelect.value || null,
       micId: micSelect.value || null,
     });
-    if (!prep || !prep.success) {
+    if (!result || !result.success) {
       startBtn.disabled = false;
       startBtn.textContent = 'Start Recording';
-      chrome.tabs.remove(tempTab.id).catch(() => {});
-      alert(prep?.error || 'Failed to prepare recording');
-      return;
-    }
-    await chrome.storage.session.set({
-      desktopRecordConfig: {
-        mode: currentMode,
-        cameraId: cameraSelect.value || null,
-        micId: micSelect.value || null,
-        recordingId: prep.recordingId,
-        userId: prep.userId,
-        authToken: prep.authToken,
-      },
-    });
-    try {
-      await chrome.scripting.executeScript({
-        target: { tabId: tempTab.id },
-        files: ['content/desktop-recorder.js'],
-      });
-    } catch {
-      startBtn.disabled = false;
-      startBtn.textContent = 'Start Recording';
-      chrome.tabs.remove(tempTab.id).catch(() => {});
-      alert('Failed to start recording.');
+      alert(result?.error || 'Failed to start recording');
       return;
     }
   }
 
-  elapsedSeconds = 0;
-  showView('recording');
-  startTimerDisplay();
+  // Close popup — bubble on page handles all controls (Loom-style)
+  window.close();
 }
 
 // === Timer Display ===

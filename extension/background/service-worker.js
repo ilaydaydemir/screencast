@@ -192,6 +192,80 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       })();
       return true;
 
+    case 'startFromInternalPage':
+      (async () => {
+        try {
+          const { mode, cameraId, micId } = message;
+          currentMode = mode;
+          currentCameraId = cameraId;
+          elapsedSeconds = 0;
+          uploadError = null;
+          isDesktopContentScript = true;
+
+          const auth = await chrome.storage.local.get(['authToken', 'userId']);
+          if (!auth.authToken || !auth.userId) {
+            sendResponse({ success: false, error: 'Not logged in' });
+            return;
+          }
+
+          // Create recording row
+          let recordingId = null;
+          const now = new Date();
+          const title = 'Recording - ' + now.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) + ' ' + now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+          const res = await fetch(`${SUPABASE_URL}/rest/v1/recordings`, {
+            method: 'POST',
+            headers: {
+              'apikey': SUPABASE_ANON_KEY,
+              'Authorization': `Bearer ${auth.authToken}`,
+              'Content-Type': 'application/json',
+              'Prefer': 'return=representation',
+            },
+            body: JSON.stringify({
+              user_id: auth.userId, title, duration: 0, file_size: 0,
+              mime_type: 'video/webm', recording_mode: 'screen', status: 'processing',
+            }),
+          });
+          if (!res.ok) {
+            sendResponse({ success: false, error: 'Failed to create recording row' });
+            return;
+          }
+          const [row] = await res.json();
+          recordingId = row.id;
+          lastRecordingId = recordingId;
+          await chrome.storage.session.set({ lastRecordingId: recordingId });
+
+          // Respond immediately so popup can close
+          sendResponse({ success: true });
+
+          // Open a real tab, wait for load, inject content script
+          const tempTab = await chrome.tabs.create({ url: 'https://www.google.com', active: true });
+          await new Promise((resolve) => {
+            const listener = (tabId, info) => {
+              if (tabId === tempTab.id && info.status === 'complete') {
+                chrome.tabs.onUpdated.removeListener(listener);
+                resolve();
+              }
+            };
+            chrome.tabs.onUpdated.addListener(listener);
+          });
+
+          activeTabId = tempTab.id;
+          await chrome.storage.session.set({
+            desktopRecordConfig: {
+              mode, cameraId, micId, recordingId,
+              userId: auth.userId, authToken: auth.authToken,
+            },
+          });
+          await chrome.scripting.executeScript({
+            target: { tabId: tempTab.id },
+            files: ['content/desktop-recorder.js'],
+          });
+        } catch (err) {
+          console.error('[SW] startFromInternalPage failed:', err);
+        }
+      })();
+      return true;
+
     case 'prepareDesktopRecording':
       (async () => {
         try {
