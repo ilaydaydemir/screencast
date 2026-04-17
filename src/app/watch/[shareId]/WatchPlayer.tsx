@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { formatDuration } from '@/lib/format'
 import { SocialExport } from '@/components/export/SocialExport'
+import { SubtitleGenerator } from '@/components/subtitles/SubtitleGenerator'
 
 interface WatchPlayerProps {
   videoUrl: string | null
@@ -14,6 +15,7 @@ interface WatchPlayerProps {
 export function WatchPlayer({ videoUrl, title, duration, shareId }: WatchPlayerProps) {
   const [copied, setCopied] = useState(false)
   const [showExport, setShowExport] = useState(false)
+  const [showSubs, setShowSubs] = useState(false)
 
   const shareUrl = typeof window !== 'undefined'
     ? `${window.location.origin}/watch/${shareId}`
@@ -57,14 +59,24 @@ export function WatchPlayer({ videoUrl, title, duration, shareId }: WatchPlayerP
         </div>
         <div className="flex shrink-0 gap-2">
           <button
-            onClick={() => setShowExport(v => !v)}
+            onClick={() => { setShowSubs(v => !v); setShowExport(false) }}
+            className={`flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium transition-colors
+              ${showSubs
+                ? 'border-blue-500 bg-blue-500/10 text-blue-500'
+                : 'border-border bg-card hover:bg-muted'
+              }`}
+          >
+            {showSubs ? '✕' : '💬'} Subtitles
+          </button>
+          <button
+            onClick={() => { setShowExport(v => !v); setShowSubs(false) }}
             className={`flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium transition-colors
               ${showExport
                 ? 'border-red-500 bg-red-500/10 text-red-500'
                 : 'border-border bg-card hover:bg-muted'
               }`}
           >
-            {showExport ? '✕ Close' : '📤 Export'}
+            {showExport ? '✕' : '📤'} Export
           </button>
           <button
             onClick={copyLink}
@@ -83,6 +95,11 @@ export function WatchPlayer({ videoUrl, title, duration, shareId }: WatchPlayerP
         <span className="font-medium text-foreground">Share link: </span>
         <span className="break-all">{shareUrl}</span>
       </div>
+
+      {/* Subtitle panel */}
+      {showSubs && (
+        <SubtitleGenerator videoUrl={videoUrl} title={title} />
+      )}
 
       {/* Social export panel */}
       {showExport && (
