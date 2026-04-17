@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { formatDuration } from '@/lib/format'
+import { SocialExport } from '@/components/export/SocialExport'
 
 interface WatchPlayerProps {
   videoUrl: string | null
@@ -12,6 +13,7 @@ interface WatchPlayerProps {
 
 export function WatchPlayer({ videoUrl, title, duration, shareId }: WatchPlayerProps) {
   const [copied, setCopied] = useState(false)
+  const [showExport, setShowExport] = useState(false)
 
   const shareUrl = typeof window !== 'undefined'
     ? `${window.location.origin}/watch/${shareId}`
@@ -41,10 +43,11 @@ export function WatchPlayer({ videoUrl, title, duration, shareId }: WatchPlayerP
           className="block w-full"
           style={{ maxHeight: '70vh' }}
           playsInline
+          crossOrigin="anonymous"
         />
       </div>
 
-      {/* Meta + share */}
+      {/* Meta + actions */}
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-lg font-semibold leading-snug">{title}</h1>
@@ -52,20 +55,27 @@ export function WatchPlayer({ videoUrl, title, duration, shareId }: WatchPlayerP
             {formatDuration(duration)} recording
           </p>
         </div>
-
-        <button
-          onClick={copyLink}
-          className="flex shrink-0 items-center gap-2 rounded-lg border border-border bg-card px-4 py-2 text-sm font-medium transition-colors hover:bg-muted"
-        >
-          {copied ? (
-            <><span className="text-green-500">✓</span> Copied!</>
-          ) : (
-            <><span>🔗</span> Copy link</>
-          )}
-        </button>
+        <div className="flex shrink-0 gap-2">
+          <button
+            onClick={() => setShowExport(v => !v)}
+            className={`flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium transition-colors
+              ${showExport
+                ? 'border-red-500 bg-red-500/10 text-red-500'
+                : 'border-border bg-card hover:bg-muted'
+              }`}
+          >
+            {showExport ? '✕ Close' : '📤 Export'}
+          </button>
+          <button
+            onClick={copyLink}
+            className="flex items-center gap-2 rounded-lg border border-border bg-card px-4 py-2 text-sm font-medium transition-colors hover:bg-muted"
+          >
+            {copied ? <><span className="text-green-500">✓</span> Copied!</> : <><span>🔗</span> Share</>}
+          </button>
+        </div>
       </div>
 
-      {/* Share link box */}
+      {/* Share link */}
       <div
         onClick={copyLink}
         className="cursor-pointer rounded-xl border border-border bg-muted/40 px-4 py-3 text-sm text-muted-foreground transition-colors hover:bg-muted"
@@ -73,6 +83,11 @@ export function WatchPlayer({ videoUrl, title, duration, shareId }: WatchPlayerP
         <span className="font-medium text-foreground">Share link: </span>
         <span className="break-all">{shareUrl}</span>
       </div>
+
+      {/* Social export panel */}
+      {showExport && (
+        <SocialExport videoUrl={videoUrl} title={title} />
+      )}
     </div>
   )
 }
