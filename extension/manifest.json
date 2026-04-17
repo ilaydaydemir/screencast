@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Screencast Recorder",
-  "version": "1.2.0",
+  "version": "1.2.3",
   "description": "Record your screen with webcam overlay. Like Loom, in your browser.",
   "permissions": [
     "tabs",
