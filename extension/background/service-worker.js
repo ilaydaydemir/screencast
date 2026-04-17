@@ -422,7 +422,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 
 // === Start Recording ===
 async function handleStartRecording({ mode, cameraId, micId, desktopStreamId }) {
-  console.log('[SW] handleStartRecording:', mode, 'camera:', cameraId, 'mic:', micId);
+  console.log('[SW] handleStartRecording:', mode, 'camera:', cameraId, 'mic:', micId, 'desktopStreamId:', !!desktopStreamId);
   currentMode = mode;
   currentCameraId = cameraId;
   elapsedSeconds = 0;
@@ -433,19 +433,36 @@ async function handleStartRecording({ mode, cameraId, micId, desktopStreamId }) 
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     activeTabId = tab.id;
 
-    // CRITICAL: forward to recorder tab BEFORE any network calls
-    // User activation from popup expires in ~5s — DB row creation would waste it
-    // Recorder tab was pre-warmed when popup opened (ensureRecorderReady)
     if (!recorderTabReady) await ensureRecorderTab();
 
-    // Forward to recorder tab IMMEDIATELY (user activation still alive)
-    const result = await forwardToRecorderTab({
-      action: 'startRecording',
-      mode,
-      desktopStreamId: desktopStreamId || null,
-      cameraId: null,
-      micId,
-    });
+    let forwardMsg;
+    if (mode === 'tab') {
+      // Tab capture: get stream ID bound specifically to the recorder tab (no user activation needed)
+      console.log('[SW] Getting tab capture stream ID for tab:', tab.id, 'consumerTabId:', recorderTabId);
+      const tabStreamId = await chrome.tabCapture.getMediaStreamId({
+        targetTabId: tab.id,
+        consumerTabId: recorderTabId,
+      });
+      console.log('[SW] tabCaptureStreamId obtained:', tabStreamId?.slice(0, 20));
+      forwardMsg = {
+        action: 'startRecording',
+        mode: 'tab',
+        tabCaptureStreamId: tabStreamId,
+        cameraId: null,
+        micId,
+      };
+    } else {
+      // Screen/Window/Camera: desktopStreamId from popup's chooseDesktopMedia, or null for camera-only
+      forwardMsg = {
+        action: 'startRecording',
+        mode,
+        desktopStreamId: desktopStreamId || null,
+        cameraId: mode === 'camera-only' ? cameraId : null,
+        micId,
+      };
+    }
+
+    const result = await forwardToRecorderTab(forwardMsg);
 
     if (!result || !result.success) {
       return { success: false, error: result?.error || 'Recorder failed to start' };

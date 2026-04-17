@@ -360,10 +360,17 @@ async function handleStart({ mode, tabCaptureStreamId, desktopStreamId, cameraId
   currentUserId = userId || null;
   currentAuthToken = authToken || null;
 
-  if (mode === 'tab' || mode === 'full-screen' || mode === 'window') {
+  if (mode === 'tab' && tabCaptureStreamId) {
+    // Tab capture: stream ID bound to this recorder tab, use chromeMediaSource:'tab'
+    await startTabMode(tabCaptureStreamId, micId);
+  } else if (mode === 'full-screen' || mode === 'window') {
+    // Screen/window: stream ID from popup's chooseDesktopMedia, use chromeMediaSource:'desktop'
     await startDesktopMode(desktopStreamId, cameraId, micId, mode);
   } else if (mode === 'camera-only') {
     await startCameraOnlyMode(cameraId, micId);
+  } else {
+    // Fallback (tab without stream ID, or unknown mode)
+    await startDesktopMode(desktopStreamId, cameraId, micId, mode || 'full-screen');
   }
 
   return { success: true };

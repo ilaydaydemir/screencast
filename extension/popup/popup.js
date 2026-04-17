@@ -429,8 +429,9 @@ async function startAudioLevel(deviceId) {
 }
 
 // === Start Recording ===
-// chooseDesktopMedia in popup (has user activation) → stream ID → recorder tab
-// getUserMedia with stream ID does NOT need user activation — always works.
+// Tab mode: SW uses chrome.tabCapture.getMediaStreamId (no picker, no user activation needed)
+// Screen/Window mode: popup shows native picker via chooseDesktopMedia → stream ID → recorder tab
+// Camera only: no screen capture needed
 async function startRecording() {
   startBtn.disabled = true;
   startBtn.textContent = 'Starting...';
@@ -442,30 +443,31 @@ async function startRecording() {
   if (audioRafId) cancelAnimationFrame(audioRafId);
   if (audioContext) { audioContext.close(); audioContext = null; }
 
-  if (currentMode === 'camera-only') {
+  if (currentMode === 'camera-only' || currentMode === 'tab') {
+    // Tab and camera-only: no picker, SW handles capture directly
     const result = await sendMessage({
       action: 'startRecording',
-      mode: 'camera-only',
+      mode: currentMode,
       cameraId: cameraSelect.value || null,
       micId: micSelect.value || null,
     });
     if (!result || !result.success) {
       startBtn.disabled = false;
       startBtn.textContent = 'Start Recording';
-      alert(result?.error || 'Failed to start camera recording');
+      alert(result?.error || 'Failed to start recording');
       return;
     }
     window.close();
     return;
   }
 
-  // Screen/Window/Tab: popup shows Chrome's native picker via chooseDesktopMedia
-  // This works from ANY page (chrome://newtab, internal pages, etc.)
+  // Screen/Window: show native picker (no 'tab' source — tab handled separately above)
+  // chooseDesktopMedia returns a stream ID usable cross-process with chromeMediaSource:'desktop'
   let streamId;
   try {
     streamId = await new Promise((resolve, reject) => {
       chrome.desktopCapture.chooseDesktopMedia(
-        ['screen', 'window', 'tab'],
+        ['screen', 'window'],
         (id) => {
           if (id) resolve(id);
           else reject(new Error('cancelled'));
@@ -478,7 +480,6 @@ async function startRecording() {
     return;
   }
 
-  // Stream ID obtained — send to SW → recorder tab uses getUserMedia (no activation needed)
   const result = await sendMessage({
     action: 'startRecording',
     mode: currentMode,
