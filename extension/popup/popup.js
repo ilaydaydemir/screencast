@@ -489,21 +489,12 @@ async function startRecording() {
       return;
     }
   } else {
-    // Internal page (new tab, chrome://*, etc.): use chooseDesktopMedia from popup
-    // This shows Chrome's screen picker without needing a content script
-    const sources = currentMode === 'window' ? ['window', 'screen'] : ['screen', 'window'];
-    const streamId = await new Promise((resolve) => {
-      chrome.desktopCapture.chooseDesktopMedia(sources, (id) => resolve(id || null));
-    });
-    if (!streamId) {
-      startBtn.disabled = false;
-      startBtn.textContent = 'Start Recording';
-      return; // user cancelled picker
-    }
+    // Internal page (new tab, chrome://*, etc.): recorder tab calls getDisplayMedia directly
+    // User activation transfers via chrome.runtime.sendMessage in MV3
     const result = await sendMessage({
       action: 'startRecording',
       mode: currentMode,
-      desktopStreamId: streamId,
+      desktopStreamId: null,
       cameraId: cameraSelect.value || null,
       micId: micSelect.value || null,
     });

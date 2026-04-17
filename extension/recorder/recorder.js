@@ -355,7 +355,7 @@ async function handleStart({ mode, tabCaptureStreamId, desktopStreamId, cameraId
   if (mode === 'tab') {
     await startTabMode(tabCaptureStreamId, micId);
   } else if (mode === 'full-screen' || mode === 'window') {
-    await startDesktopMode(desktopStreamId, cameraId, micId);
+    await startDesktopMode(desktopStreamId, cameraId, micId, mode);
   } else if (mode === 'camera-only') {
     await startCameraOnlyMode(cameraId, micId);
   }
@@ -409,23 +409,34 @@ async function startTabMode(streamId, micId) {
 // Record the getUserMedia stream directly. The webcam bubble is injected
 // as a content script on the active tab and captured as part of the screen.
 // The popup obtained the streamId via chooseDesktopMedia (no targetTab binding).
-async function startDesktopMode(streamId, cameraId, micId) {
-  console.log('[Recorder] startDesktopMode, streamId:', streamId?.slice(0, 20));
-  screenStream = await navigator.mediaDevices.getUserMedia({
-    audio: {
-      mandatory: {
-        chromeMediaSource: 'desktop',
-        chromeMediaSourceId: streamId,
+async function startDesktopMode(streamId, cameraId, micId, mode) {
+  console.log('[Recorder] startDesktopMode, streamId:', streamId?.slice(0, 20), 'mode:', mode);
+  if (streamId) {
+    screenStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        mandatory: {
+          chromeMediaSource: 'desktop',
+          chromeMediaSourceId: streamId,
+        },
       },
-    },
-    video: {
-      mandatory: {
-        chromeMediaSource: 'desktop',
-        chromeMediaSourceId: streamId,
+      video: {
+        mandatory: {
+          chromeMediaSource: 'desktop',
+          chromeMediaSourceId: streamId,
+        },
       },
-    },
-  });
-  console.log('[Recorder] getUserMedia desktop succeeded, tracks:', screenStream.getTracks().map(t => t.kind + ':' + t.label));
+    });
+  } else {
+    // No stream ID — call getDisplayMedia directly (user activation via message)
+    const constraints = { audio: true };
+    if (mode === 'window') {
+      constraints.video = { displaySurface: 'window' };
+    } else {
+      constraints.video = { displaySurface: 'monitor' };
+    }
+    screenStream = await navigator.mediaDevices.getDisplayMedia(constraints);
+  }
+  console.log('[Recorder] Screen capture succeeded, tracks:', screenStream.getTracks().map(t => t.kind + ':' + t.label));
 
   // Build composite stream: screen video + mixed audio (system + mic)
   const compositeStream = new MediaStream();
