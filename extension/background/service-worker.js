@@ -423,6 +423,7 @@ async function handleStartRecording({ mode, cameraId, micId, desktopStreamId }) 
   currentCameraId = cameraId;
   elapsedSeconds = 0;
   uploadError = null;
+  isDesktopContentScript = false;
 
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
