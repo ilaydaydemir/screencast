@@ -280,6 +280,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       handleUpload(message).then(r => { console.log('[Recorder] upload result:', JSON.stringify(r)?.slice(0, 200)); sendResponse(r); });
       return true;
 
+    case 'setRecordingId':
+      currentRecordingId = message.recordingId || null;
+      currentUserId = message.userId || null;
+      currentAuthToken = message.authToken || null;
+      console.log('[Recorder] setRecordingId:', currentRecordingId);
+      sendResponse({ success: true });
+      return false;
+
     case 'discardRecording':
       cleanup();
       recordedBlob = null;
@@ -352,9 +360,7 @@ async function handleStart({ mode, tabCaptureStreamId, desktopStreamId, cameraId
   currentUserId = userId || null;
   currentAuthToken = authToken || null;
 
-  if (mode === 'tab') {
-    await startTabMode(tabCaptureStreamId, micId);
-  } else if (mode === 'full-screen' || mode === 'window') {
+  if (mode === 'tab' || mode === 'full-screen' || mode === 'window') {
     await startDesktopMode(desktopStreamId, cameraId, micId, mode);
   } else if (mode === 'camera-only') {
     await startCameraOnlyMode(cameraId, micId);
@@ -427,9 +433,11 @@ async function startDesktopMode(streamId, cameraId, micId, mode) {
       },
     });
   } else {
-    // No stream ID — call getDisplayMedia directly (user activation via message)
     const constraints = { audio: true };
-    if (mode === 'window') {
+    if (mode === 'tab') {
+      constraints.video = true;
+      constraints.preferCurrentTab = false;
+    } else if (mode === 'window') {
       constraints.video = { displaySurface: 'window' };
     } else {
       constraints.video = { displaySurface: 'monitor' };

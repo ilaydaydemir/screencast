@@ -426,7 +426,9 @@ async function startAudioLevel(deviceId) {
   }
 }
 
-// === Start Recording (Loom-style: chooseDesktopMedia from popup) ===
+// === Start Recording ===
+// ALL modes: popup → SW → recorder tab → getDisplayMedia/getUserMedia
+// No content scripts, no chooseDesktopMedia, no tabCapture. One path.
 async function startRecording() {
   startBtn.disabled = true;
   startBtn.textContent = 'Starting...';
@@ -438,50 +440,9 @@ async function startRecording() {
   if (audioRafId) cancelAnimationFrame(audioRafId);
   if (audioContext) { audioContext.close(); audioContext = null; }
 
-  if (currentMode === 'camera-only') {
-    // Camera-only: no screen capture, just send to SW → recorder tab
-    const result = await sendMessage({
-      action: 'startRecording',
-      mode: 'camera-only',
-      cameraId: cameraSelect.value || null,
-      micId: micSelect.value || null,
-    });
-    if (!result || !result.success) {
-      startBtn.disabled = false;
-      startBtn.textContent = 'Start Recording';
-      alert(result?.error || 'Failed to start recording');
-      return;
-    }
-    window.close();
-    return;
-  }
-
-  // Screen/Window/Tab: use chooseDesktopMedia — works from ANY page (Loom approach)
-  const sources = [];
-  if (currentMode === 'tab') sources.push('tab', 'window', 'screen');
-  else if (currentMode === 'window') sources.push('window', 'screen', 'tab');
-  else sources.push('screen', 'window', 'tab');
-
-  let streamId;
-  try {
-    streamId = await new Promise((resolve, reject) => {
-      const reqId = chrome.desktopCapture.chooseDesktopMedia(sources, (id) => {
-        if (id) resolve(id);
-        else reject(new Error('cancelled'));
-      });
-      if (!reqId) reject(new Error('chooseDesktopMedia not available'));
-    });
-  } catch {
-    startBtn.disabled = false;
-    startBtn.textContent = 'Start Recording';
-    return; // user cancelled picker
-  }
-
-  // Got stream ID — tell SW to start recording via recorder tab
   const result = await sendMessage({
     action: 'startRecording',
     mode: currentMode,
-    desktopStreamId: streamId,
     cameraId: cameraSelect.value || null,
     micId: micSelect.value || null,
   });
@@ -493,7 +454,6 @@ async function startRecording() {
     return;
   }
 
-  // Close popup — bubble on page handles all controls (Loom-style)
   window.close();
 }
 
