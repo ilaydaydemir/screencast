@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Screencast Recorder",
-  "version": "1.3.2",
+  "version": "1.4.0",
   "description": "Record your screen with webcam overlay. Like Loom, in your browser.",
   "permissions": [
     "tabs",
@@ -9,7 +9,8 @@
     "desktopCapture",
     "activeTab",
     "storage",
-    "scripting"
+    "scripting",
+    "offscreen"
   ],
   "host_permissions": [
     "https://screencast-eight.vercel.app/*",

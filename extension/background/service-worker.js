@@ -79,27 +79,7 @@ chrome.runtime.onConnect.addListener((port) => {
   }
 });
 
-// === Recorder Tab Lifecycle Monitoring ===
-chrome.tabs.onRemoved.addListener((tabId) => {
-  if (tabId === recorderTabId) {
-    recorderTabId = null;
-    recorderTabReady = false;
-    if (recordingState === 'recording' || recordingState === 'paused') {
-      clearInterval(timerInterval);
-      recordingState = 'stopped';
-      if (bubbleTabId) {
-        removeBubble(bubbleTabId).catch(() => {});
-        bubbleTabId = null;
-      }
-      // Notify popup — IDB has chunks for recovery
-      chrome.runtime.sendMessage({
-        action: 'recorderTabClosed',
-        recoverable: true,
-        recordingId: lastRecordingId,
-      }).catch(() => {});
-    }
-  }
-});
+// Offscreen doc lifecycle is managed by Chrome; no tab listener needed.
 
 // === Message Router ===
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -394,8 +374,6 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
 
   const newTabId = activeInfo.tabId;
   if (newTabId === bubbleTabId) return;
-  // Don't inject into the recorder tab
-  if (newTabId === recorderTabId) return;
 
   if (bubbleTabId) {
     await removeBubble(bubbleTabId);
@@ -456,11 +434,10 @@ async function handleStartRecording({ mode, cameraId, micId, desktopStreamId, so
 
     let forwardMsg;
     if (mode === 'tab') {
-      // Tab capture: get stream ID bound specifically to the recorder tab (no user activation needed)
-      console.log('[SW] Getting tab capture stream ID for tab:', tab.id, 'consumerTabId:', recorderTabId);
+      // Tab capture: get stream ID for the user's tab. No consumerTabId → any extension context can consume.
+      console.log('[SW] Getting tab capture stream ID for tab:', tab.id);
       const tabStreamId = await chrome.tabCapture.getMediaStreamId({
         targetTabId: tab.id,
-        consumerTabId: recorderTabId,
       });
       console.log('[SW] tabCaptureStreamId obtained:', tabStreamId?.slice(0, 20));
       forwardMsg = {
@@ -525,19 +502,33 @@ async function handleStartRecording({ mode, cameraId, micId, desktopStreamId, so
       }
     }
 
-    // Switch focus back to the user's original tab (Chrome may have switched to recorder)
-    try {
-      await chrome.tabs.update(tab.id, { active: true });
-      await chrome.windows.update(tab.windowId, { focused: true });
-    } catch (e) { console.warn('[SW] Could not refocus original tab:', e); }
+    // Offscreen document is invisible — no refocus needed.
 
-    // Inject bubble on active tab (skip internal pages)
-    try {
-      if (tab.url && !tab.url.startsWith('chrome://') && !tab.url.startsWith('chrome-extension://') && !tab.url.startsWith('about:')) {
-        await injectBubbleAndToolbar(tab.id, cameraId, 0, false);
-        bubbleTabId = tab.id;
-      }
-    } catch (e) { console.warn('[SW] Bubble injection failed:', e); }
+    // Inject bubble — prefer the source tab, fall back to any real webpage
+    const injectTab = await findInjectableTab(tab);
+    if (injectTab) {
+      try {
+        await injectBubbleAndToolbar(injectTab.id, cameraId, 0, false);
+        bubbleTabId = injectTab.id;
+        // If the bubble is on a different tab than the source, bring it to front so user sees controls
+        if (injectTab.id !== tab.id) {
+          await chrome.tabs.update(injectTab.id, { active: true });
+          await chrome.windows.update(injectTab.windowId, { focused: true });
+        }
+      } catch (e) { console.warn('[SW] Bubble injection failed:', e); }
+    } else {
+      // No injectable tab — open a minimal control page
+      const controlTab = await chrome.tabs.create({
+        url: 'https://www.google.com/search?q=recording+in+progress',
+        active: true,
+      });
+      // Wait for it to load, then inject
+      await new Promise(r => setTimeout(r, 2000));
+      try {
+        await injectBubbleAndToolbar(controlTab.id, cameraId, 0, false);
+        bubbleTabId = controlTab.id;
+      } catch (e) { console.warn('[SW] Fallback bubble injection failed:', e); }
+    }
 
     startTimer();
     recordingState = 'recording';
@@ -1216,62 +1207,52 @@ function startTimer() {
   }, 1000);
 }
 
-// === Recorder Tab Management (replaces offscreen document) ===
-async function ensureRecorderTab() {
-  // Check if recorder tab still exists
-  if (recorderTabId) {
-    try {
-      await chrome.tabs.get(recorderTabId);
-      if (recorderTabReady) return;
-      // Tab exists but might not be ready, wait for it
-      await waitForRecorderTab();
-      return;
-    } catch {
-      recorderTabId = null;
-      recorderTabReady = false;
-    }
-  }
+// === Offscreen Document Management (invisible — Loom-style) ===
+const OFFSCREEN_URL = 'offscreen/offscreen.html';
 
-  // Create new pinned tab
-  const tab = await chrome.tabs.create({
-    url: chrome.runtime.getURL('recorder/recorder.html'),
-    pinned: true,
-    active: false,
+async function hasOffscreenDocument() {
+  if (!chrome.runtime.getContexts) return false;
+  const contexts = await chrome.runtime.getContexts({
+    contextTypes: ['OFFSCREEN_DOCUMENT'],
   });
-  recorderTabId = tab.id;
-  recorderTabReady = false;
-
-  await waitForRecorderTab();
+  return contexts.length > 0;
 }
 
-async function waitForRecorderTab() {
-  // Wait for tab to fully load
-  for (let i = 0; i < 50; i++) {
-    try {
-      const tab = await chrome.tabs.get(recorderTabId);
-      if (tab.status === 'complete') {
-        // Small extra delay to ensure script is initialized
-        await new Promise(r => setTimeout(r, 200));
-        recorderTabReady = true;
-        return;
-      }
-    } catch {
-      throw new Error('Recorder tab was closed');
-    }
-    await new Promise(r => setTimeout(r, 100));
+async function ensureRecorderTab() {
+  // Keep the function name for compatibility, but create an offscreen document instead
+  if (await hasOffscreenDocument()) {
+    recorderTabReady = true;
+    return;
   }
-  throw new Error('Recorder tab load timeout');
+  try {
+    await chrome.offscreen.createDocument({
+      url: OFFSCREEN_URL,
+      reasons: ['USER_MEDIA', 'DISPLAY_MEDIA'],
+      justification: 'Record screen/tab/window/camera to video file',
+    });
+    // Small delay for script init
+    await new Promise(r => setTimeout(r, 300));
+    recorderTabReady = true;
+    recorderTabId = -1; // sentinel: offscreen doc exists (not a tab)
+  } catch (err) {
+    // If already exists due to race, that's fine
+    if (String(err).includes('Only a single offscreen')) {
+      recorderTabReady = true;
+      recorderTabId = -1;
+      return;
+    }
+    throw err;
+  }
 }
 
 async function forwardToRecorderTab(msg) {
-  console.log('[SW] forwardToRecorderTab:', msg.action, 'recorderTabId:', recorderTabId);
-  if (!recorderTabId) {
+  console.log('[SW] forwardToRecorderTab:', msg.action);
+  if (!(await hasOffscreenDocument())) {
     try {
       await ensureRecorderTab();
-      console.log('[SW] ensureRecorderTab done, recorderTabId:', recorderTabId);
     } catch (e) {
-      console.error('[SW] ensureRecorderTab failed:', e);
-      return { success: false, error: 'Recorder tab not available' };
+      console.error('[SW] ensureRecorderTab (offscreen) failed:', e);
+      return { success: false, error: 'Offscreen doc not available: ' + e.message };
     }
   }
   try {
@@ -1285,13 +1266,13 @@ async function forwardToRecorderTab(msg) {
 }
 
 async function closeRecorderTab() {
-  if (recorderTabId) {
-    try {
-      await chrome.tabs.remove(recorderTabId);
-    } catch {}
-    recorderTabId = null;
-    recorderTabReady = false;
-  }
+  try {
+    if (await hasOffscreenDocument()) {
+      await chrome.offscreen.closeDocument();
+    }
+  } catch {}
+  recorderTabId = null;
+  recorderTabReady = false;
 }
 
 // === Token Refresh ===
