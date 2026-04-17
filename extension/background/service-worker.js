@@ -416,6 +416,11 @@ async function handleStartRecording({ mode, cameraId, micId, desktopStreamId, so
   uploadError = null;
   isDesktopContentScript = false;
 
+  // Always start with a fresh offscreen document — any previous stream would
+  // block chrome.tabCapture with "Cannot capture a tab with an active stream"
+  await closeRecorderTab();
+  await closeOverlayWindow();
+
   try {
     // Prefer explicit sourceTabId from popup (popup doesn't have a tab, so SW query is ambiguous)
     let tab;
