@@ -489,17 +489,60 @@ async function startRecording() {
       return;
     }
   } else {
-    // Internal page: delegate entirely to SW (popup closes when new tab opens)
-    const result = await sendMessage({
-      action: 'startFromInternalPage',
+    // Internal page: open background tab, inject from popup (keeps user activation)
+    const prep = await sendMessage({
+      action: 'prepareDesktopRecording',
       mode: currentMode,
       cameraId: cameraSelect.value || null,
       micId: micSelect.value || null,
     });
-    if (!result || !result.success) {
+    if (!prep || !prep.success) {
       startBtn.disabled = false;
       startBtn.textContent = 'Start Recording';
-      alert(result?.error || 'Failed to start recording');
+      alert(prep?.error || 'Failed to prepare recording');
+      return;
+    }
+    let tempTab;
+    try {
+      tempTab = await chrome.tabs.create({ url: 'https://www.google.com', active: false });
+      await new Promise((resolve) => {
+        const listener = (tabId, info) => {
+          if (tabId === tempTab.id && info.status === 'complete') {
+            chrome.tabs.onUpdated.removeListener(listener);
+            resolve();
+          }
+        };
+        chrome.tabs.onUpdated.addListener(listener);
+      });
+    } catch {
+      startBtn.disabled = false;
+      startBtn.textContent = 'Start Recording';
+      alert('Failed to open a page for recording.');
+      return;
+    }
+    await chrome.storage.session.set({
+      desktopRecordConfig: {
+        mode: currentMode,
+        cameraId: cameraSelect.value || null,
+        micId: micSelect.value || null,
+        recordingId: prep.recordingId,
+        userId: prep.userId,
+        authToken: prep.authToken,
+      },
+    });
+    try {
+      // Inject with user activation from popup click
+      await chrome.scripting.executeScript({
+        target: { tabId: tempTab.id },
+        files: ['content/desktop-recorder.js'],
+      });
+      // Now activate the tab so user sees the screen picker
+      await chrome.tabs.update(tempTab.id, { active: true });
+    } catch {
+      startBtn.disabled = false;
+      startBtn.textContent = 'Start Recording';
+      chrome.tabs.remove(tempTab.id).catch(() => {});
+      alert('Failed to start recording.');
       return;
     }
   }
