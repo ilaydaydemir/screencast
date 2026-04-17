@@ -379,7 +379,6 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
   }
   if (recordingState !== 'recording' && recordingState !== 'paused') return;
   if (currentMode === 'camera-only') return;
-  if (currentMode === 'tab') return;
 
   const newTabId = activeInfo.tabId;
   if (newTabId === bubbleTabId) return;

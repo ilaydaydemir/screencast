@@ -9,6 +9,60 @@
     return;
   }
   window._screencastDesktopRecorderActive = true;
+
+  // IDB helpers — content scripts share the extension's IDB origin
+  let _idbChunkIndex = 0;
+  function idbSaveChunk(index, chunk, mimeType) {
+    return new Promise((resolve) => {
+      try {
+        const req = indexedDB.open('screencast', 1);
+        req.onupgradeneeded = (e) => { e.target.result.createObjectStore('blobs'); };
+        req.onsuccess = (e) => {
+          const db = e.target.result;
+          const tx = db.transaction('blobs', 'readwrite');
+          const store = tx.objectStore('blobs');
+          store.put(chunk, `chunk-${index}`);
+          store.put({ count: index + 1, mimeType }, 'chunk-meta');
+          tx.oncomplete = () => { db.close(); resolve(); };
+          tx.onerror = () => { db.close(); resolve(); };
+        };
+        req.onerror = () => resolve();
+      } catch { resolve(); }
+    });
+  }
+  function idbSaveFinalBlob(blob) {
+    return new Promise((resolve) => {
+      try {
+        const req = indexedDB.open('screencast', 1);
+        req.onupgradeneeded = (e) => { e.target.result.createObjectStore('blobs'); };
+        req.onsuccess = (e) => {
+          const db = e.target.result;
+          const tx = db.transaction('blobs', 'readwrite');
+          tx.objectStore('blobs').put(blob, 'recording');
+          tx.oncomplete = () => { db.close(); resolve(); };
+          tx.onerror = () => { db.close(); resolve(); };
+        };
+        req.onerror = () => resolve();
+      } catch { resolve(); }
+    });
+  }
+  function idbClear() {
+    return new Promise((resolve) => {
+      try {
+        const req = indexedDB.open('screencast', 1);
+        req.onupgradeneeded = (e) => { e.target.result.createObjectStore('blobs'); };
+        req.onsuccess = (e) => {
+          const db = e.target.result;
+          const tx = db.transaction('blobs', 'readwrite');
+          tx.objectStore('blobs').clear();
+          tx.oncomplete = () => { db.close(); resolve(); };
+          tx.onerror = () => { db.close(); resolve(); };
+        };
+        req.onerror = () => resolve();
+      } catch { resolve(); }
+    });
+  }
+  await idbClear();
   const SUPABASE_URL = 'https://bgsvuywxejpmkstgqizq.supabase.co';
   const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJnc3Z1eXd4ZWpwbWtzdGdxaXpxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE2MDc0MzMsImV4cCI6MjA4NzE4MzQzM30.EvHOy5sBbXzSxjRS5vPGzm8cnFrOXxDfclP-ru3VU_M';
   const SUPPORTED_MIME_TYPES = [
@@ -138,6 +192,8 @@
     if (e.data.size > 0) {
       chunks.push(e.data);
       chunkCount++;
+      // Save every chunk to IDB so data survives tab navigation
+      idbSaveChunk(_idbChunkIndex++, e.data, mimeType);
       if (chunkCount % 5 === 0) {
         console.log(`[DesktopRec] Chunk ${chunkCount}, size: ${e.data.size}, total: ${chunks.reduce((s, c) => s + c.size, 0)}`);
       }
@@ -158,6 +214,9 @@
       chrome.runtime.sendMessage({ action: 'desktopRecordingComplete', success: false, error: 'Empty recording' });
       return;
     }
+
+    // Save final blob to IDB before upload (recovery safety net)
+    await idbSaveFinalBlob(blob);
 
     // Upload to Supabase Storage
     try {
@@ -272,6 +331,11 @@
       chrome.runtime.sendMessage({ action: 'desktopRecordingStopped' });
     };
   }
+
+  // --- Stop recorder when page navigates away so onstop fires and IDB is saved ---
+  window.addEventListener('beforeunload', () => {
+    if (recorder.state !== 'inactive') recorder.stop();
+  });
 
   function cleanup() {
     clearInterval(keepAliveInterval);
