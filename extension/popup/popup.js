@@ -277,24 +277,39 @@ function showAuthError(msg) {
   authError.style.display = 'block';
 }
 
-// === Device Enumeration (via recorder tab) ===
+// === Device Enumeration (directly in popup context) ===
 async function enumerateDevices() {
   try {
-    const result = await sendMessage({ action: 'enumerateDevices' });
+    // Request permissions in the popup's own context so labels are populated
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    } catch {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      } catch {
+        showPermissionPrompt();
+        return;
+      }
+    }
+    stream.getTracks().forEach(t => t.stop());
 
-    if (!result || !result.success || (result.cameras.length === 0 && result.mics.length === 0)) {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const cameras = devices.filter(d => d.kind === 'videoinput' && d.deviceId);
+    const mics = devices.filter(d => d.kind === 'audioinput' && d.deviceId);
+
+    if (cameras.length === 0 && mics.length === 0) {
       showPermissionPrompt();
       return;
     }
 
-    const { cameras, mics } = result;
     hidePermissionPrompt();
 
     cameraSelect.innerHTML = '<option value="">No Camera</option>';
     cameras.forEach(cam => {
       const opt = document.createElement('option');
       opt.value = cam.deviceId;
-      opt.textContent = cam.label;
+      opt.textContent = cam.label || `Camera ${cam.deviceId.slice(0, 8)}`;
       cameraSelect.appendChild(opt);
     });
 
@@ -302,7 +317,7 @@ async function enumerateDevices() {
     mics.forEach(mic => {
       const opt = document.createElement('option');
       opt.value = mic.deviceId;
-      opt.textContent = mic.label;
+      opt.textContent = mic.label || `Mic ${mic.deviceId.slice(0, 8)}`;
       micSelect.appendChild(opt);
     });
 
@@ -336,8 +351,9 @@ function showPermissionPrompt() {
     const firstSection = setupView.querySelector('.section');
     setupView.insertBefore(banner, firstSection);
 
-    document.getElementById('grant-permission-btn').addEventListener('click', () => {
-      chrome.tabs.create({ url: chrome.runtime.getURL('permissions/permissions.html') });
+    document.getElementById('grant-permission-btn').addEventListener('click', async () => {
+      banner.style.display = 'none';
+      await enumerateDevices();
     });
   }
   banner.style.display = 'block';
