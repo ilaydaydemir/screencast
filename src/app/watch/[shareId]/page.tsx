@@ -111,8 +111,18 @@ export default async function WatchPage({ params }: Props) {
 
   return (
     <div className="min-h-screen bg-background">
-      <div className="mx-auto max-w-4xl px-4 py-8">
-        <WatchPlayer videoUrl={videoUrl} title={recording.title} duration={recording.duration} />
+      <div className="mx-auto max-w-3xl px-4 py-10">
+        {/* Logo */}
+        <div className="mb-8 flex items-center gap-2">
+          <div className="h-3 w-3 rounded-full bg-red-500" />
+          <span className="text-sm font-semibold text-muted-foreground">Basic Record</span>
+        </div>
+        <WatchPlayer
+          videoUrl={videoUrl}
+          title={recording.title}
+          duration={recording.duration}
+          shareId={shareId}
+        />
       </div>
     </div>
   )

@@ -1,131 +1,76 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <meta charset="UTF-8">
-  <link rel="stylesheet" href="popup.css">
+<meta charset="UTF-8">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  width: 260px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: #111; color: #fff;
+}
+.header {
+  padding: 14px 16px;
+  display: flex; align-items: center; gap: 8px;
+  border-bottom: 1px solid #1e1e1e;
+}
+.dot { width: 14px; height: 14px; background: #ef4444; border-radius: 50%; flex-shrink: 0; }
+.app-name { font-size: 13px; font-weight: 700; letter-spacing: -0.01em; }
+
+#login-view { padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+#login-view p { font-size: 12px; color: #666; }
+input {
+  width: 100%; padding: 9px 11px;
+  background: #1a1a1a; border: 1px solid #2a2a2a;
+  border-radius: 7px; color: #fff; font-size: 13px; outline: none;
+}
+input:focus { border-color: #3a3a3a; }
+.err { font-size: 11px; color: #f87171; display: none; min-height: 14px; }
+
+#main-view { display: none; padding: 14px 16px; flex-direction: column; gap: 10px; }
+.user-row { display: flex; align-items: center; justify-content: space-between; }
+.user-email { font-size: 11px; color: #555; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 170px; }
+.btn-out { font-size: 11px; color: #444; background: none; border: none; cursor: pointer; padding: 3px 7px; border-radius: 4px; }
+.btn-out:hover { color: #888; background: #1a1a1a; }
+
+.btn {
+  width: 100%; padding: 11px;
+  border: none; border-radius: 8px;
+  font-size: 13px; font-weight: 600; cursor: pointer; transition: background 0.15s;
+}
+.btn-red { background: #ef4444; color: #fff; }
+.btn-red:hover { background: #dc2626; }
+.btn-red:disabled { background: #3a3a3a; color: #666; cursor: not-allowed; }
+.btn-ghost { background: #1a1a1a; color: #777; border: 1px solid #2a2a2a; }
+.btn-ghost:hover { border-color: #3a3a3a; color: #ccc; }
+.note { font-size: 11px; color: #444; text-align: center; }
+</style>
 </head>
 <body>
-  <div id="app">
-    <!-- Auth View -->
-    <div id="auth-view" style="display:none;">
-      <div class="header">
-        <div class="logo">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
-          <span>Screencast</span>
-        </div>
-      </div>
-      <div class="auth-container">
-        <h2 class="auth-title">Sign in to save recordings</h2>
-        <p class="auth-subtitle">Use your Screencast account</p>
-        <div id="auth-error" class="auth-error" style="display:none;"></div>
-        <input id="auth-email" type="email" placeholder="Email" class="auth-input">
-        <input id="auth-password" type="password" placeholder="Password" class="auth-input">
-        <button id="signin-btn" class="primary-btn">Sign In</button>
-        <button id="signup-btn" class="text-btn">Don't have an account? Sign Up</button>
-      </div>
-    </div>
 
-    <!-- Setup View -->
-    <div id="setup-view">
-      <div class="header">
-        <div class="logo">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
-          <span>Screencast</span>
-        </div>
-        <div id="user-info" style="display:none;">
-          <span id="user-email" class="user-email"></span>
-          <button id="signout-btn" class="signout-btn">Sign Out</button>
-        </div>
-      </div>
+<div class="header">
+  <div class="dot"></div>
+  <span class="app-name">Basic Record</span>
+</div>
 
-      <div class="section">
-        <label class="section-label">Recording Mode</label>
-        <div id="mode-picker">
-          <button data-mode="tab" class="mode-btn active">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2" y="4" width="20" height="16" rx="2"/><polyline points="2,9 22,9"/><polyline points="6,4 6,9"/></svg>
-            <span>Tab</span>
-          </button>
-          <button data-mode="full-screen" class="mode-btn">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-            <span>Screen</span>
-          </button>
-          <button data-mode="window" class="mode-btn">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="8" x2="21" y2="8"/><line x1="8" y1="3" x2="8" y2="8"/></svg>
-            <span>Window</span>
-          </button>
-          <button data-mode="camera-only" class="mode-btn">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
-            <span>Camera</span>
-          </button>
-        </div>
-      </div>
+<div id="login-view">
+  <p>Sign in to record & share</p>
+  <input type="email" id="email" placeholder="Email" autocomplete="email" />
+  <input type="password" id="pwd" placeholder="Password" />
+  <div class="err" id="err"></div>
+  <button class="btn btn-red" id="signin-btn">Sign In</button>
+</div>
 
-      <div class="section">
-        <label class="section-label">Camera</label>
-        <div id="camera-preview-container">
-          <video id="camera-preview" autoplay playsinline muted></video>
-          <div id="no-camera-msg">No Camera</div>
-        </div>
-        <select id="camera-select">
-          <option value="">No Camera</option>
-        </select>
-      </div>
-
-      <div class="section">
-        <label class="section-label">Microphone</label>
-        <select id="mic-select">
-          <option value="">No Microphone</option>
-        </select>
-        <div id="audio-level">
-          <div id="audio-level-bar"></div>
-        </div>
-      </div>
-
-      <button id="start-btn" class="primary-btn">Start Recording</button>
-      <p class="hint">60 min recording limit</p>
-    </div>
-
-    <!-- Recording View -->
-    <div id="recording-view" style="display:none;">
-      <div class="recording-header">
-        <div class="rec-indicator">
-          <div class="rec-dot"></div>
-          <span id="timer">0:00</span>
-        </div>
-      </div>
-      <div class="recording-actions">
-        <button id="pause-btn" class="action-btn">Pause</button>
-        <button id="stop-btn" class="action-btn stop">Stop</button>
-      </div>
-      <div class="transcript-row">
-        <button id="transcript-toggle" class="transcript-btn">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
-          Live Transcript
-        </button>
-      </div>
-      <div id="transcript-panel" style="display:none;">
-        <p id="transcript-text" class="transcript-text">Waiting for speech...</p>
-      </div>
-    </div>
-
-    <!-- Done View -->
-    <div id="done-view" style="display:none;">
-      <div class="done-header">
-        <span class="done-icon">&#10003;</span>
-        <span>Recording Complete</span>
-      </div>
-      <p id="recording-info" class="recording-info"></p>
-      <input id="title-input" type="text" placeholder="Recording title..." class="title-input">
-      <div class="done-actions">
-        <button id="download-btn" class="action-btn">Download</button>
-        <button id="upload-btn" class="primary-btn">Save to Screencast</button>
-      </div>
-      <button id="discard-btn" class="discard-btn">Discard</button>
-      <div id="upload-progress" style="display:none;">
-        <div id="upload-bar"></div>
-      </div>
-    </div>
+<div id="main-view">
+  <div class="user-row">
+    <span class="user-email" id="u-email"></span>
+    <button class="btn-out" id="out-btn">Sign out</button>
   </div>
-  <script src="popup.js"></script>
+  <button class="btn btn-red" id="rec-btn">⏺ &nbsp;Start Recording</button>
+  <button class="btn btn-ghost" id="dash-btn">My Recordings</button>
+  <div class="note">Screen + mic → shareable link</div>
+</div>
+
+<script src="popup.js"></script>
 </body>
 </html>

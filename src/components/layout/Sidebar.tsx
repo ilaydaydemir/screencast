@@ -2,12 +2,12 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { Video, Home, Circle } from 'lucide-react'
+import { Video, Home, Upload } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const navItems = [
-  { href: '/dashboard', label: 'My Recordings', icon: Home },
-  { href: '/dashboard/record', label: 'New Recording', icon: Circle },
+  { href: '/dashboard', label: 'Library', icon: Home },
+  { href: '/dashboard/upload', label: 'Upload', icon: Upload },
 ]
 
 export function Sidebar() {

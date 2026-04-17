@@ -1,20 +1,11 @@
 {
   "manifest_version": 3,
-  "name": "Screencast Recorder",
-  "version": "1.4.4",
-  "description": "Record your screen with webcam overlay. Like Loom, in your browser.",
-  "permissions": [
-    "tabs",
-    "tabCapture",
-    "desktopCapture",
-    "activeTab",
-    "storage",
-    "scripting",
-    "offscreen"
-  ],
+  "name": "Basic Record",
+  "version": "1.0.0",
+  "description": "Record your screen and get a shareable link.",
+  "permissions": ["storage"],
   "host_permissions": [
-    "https://screencast-eight.vercel.app/*",
-    "<all_urls>"
+    "https://bgsvuywxejpmkstgqizq.supabase.co/*"
   ],
   "action": {
     "default_popup": "popup/popup.html",
@@ -24,25 +15,9 @@
       "128": "icons/icon128.png"
     }
   },
-  "background": {
-    "service_worker": "background/service-worker.js"
-  },
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
-  },
-  "web_accessible_resources": [{
-    "resources": [
-      "camera/camera.html",
-      "camera/camera.js",
-      "recorder/recorder.html",
-      "recorder/recorder.js",
-      "offscreen/offscreen.html",
-      "offscreen/offscreen.js",
-      "overlay/overlay.html",
-      "overlay/overlay.js"
-    ],
-    "matches": ["<all_urls>"]
-  }]
+  }
 }
