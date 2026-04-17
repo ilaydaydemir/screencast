@@ -145,6 +145,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 });
 
 function setupModeAndDeviceListeners() {
+  // Sync currentMode with whichever button is visually active in HTML
+  const activeBtn = document.querySelector('.mode-btn.active');
+  if (activeBtn) currentMode = activeBtn.dataset.mode;
+
   document.querySelectorAll('.mode-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));

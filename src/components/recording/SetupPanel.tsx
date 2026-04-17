@@ -208,7 +208,7 @@ export function SetupPanel({
         Start Recording
       </Button>
       <p className="text-center text-xs text-muted-foreground">
-        5 min recording limit
+        60 min recording limit
       </p>
     </div>
   )

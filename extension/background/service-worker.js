@@ -790,9 +790,13 @@ async function startTabRecording(tab, cameraId, micId, recordingId, auth) {
 
 // === Desktop/Window Recording ===
 async function startDesktopRecording(mode, tab, cameraId, micId, recordingId, auth, desktopStreamId) {
-  // Inject webcam bubble on active tab (captured as part of screen recording)
-  await injectBubbleAndToolbar(tab.id, cameraId, 0, false);
-  bubbleTabId = tab.id;
+  // Inject webcam bubble on active tab (skip silently on internal pages)
+  try {
+    if (tab.url && !tab.url.startsWith('chrome://') && !tab.url.startsWith('chrome-extension://') && !tab.url.startsWith('about:')) {
+      await injectBubbleAndToolbar(tab.id, cameraId, 0, false);
+      bubbleTabId = tab.id;
+    }
+  } catch { /* bubble is optional — will appear when user switches to a regular tab */ }
 
   // The popup already showed the picker and got the streamId (no targetTab binding).
   // Forward to recorder tab which uses getUserMedia({chromeMediaSource: 'desktop'}).
