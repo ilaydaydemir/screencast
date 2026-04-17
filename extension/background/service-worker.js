@@ -19,6 +19,7 @@ let uploadError = null;
 let lastRecordingId = null;
 let recorderTabReady = false;
 let isDesktopContentScript = false; // true when desktop/window recording uses content script
+let overlayWindowId = null; // floating camera+controls window (Loom-style)
 
 // === Persist/restore state across SW restarts ===
 async function persistRecordingState() {
@@ -503,6 +504,20 @@ async function handleStartRecording({ mode, cameraId, micId, desktopStreamId, so
     }
 
     // Offscreen document is invisible — no refocus needed.
+    // Open floating overlay window (camera bubble + controls) — visible on all pages including chrome://
+    try {
+      const url = chrome.runtime.getURL('overlay/overlay.html') + '?cam=' + encodeURIComponent(cameraId || '') + '&elapsed=0';
+      const win = await chrome.windows.create({
+        url,
+        type: 'popup',
+        width: 180,
+        height: cameraId ? 210 : 70,
+        top: 60,
+        left: 60,
+        focused: false,
+      });
+      overlayWindowId = win.id;
+    } catch (e) { console.warn('[SW] Overlay window failed:', e); }
 
     // Inject bubble — prefer the source tab, fall back to any real webpage
     const injectTab = await findInjectableTab(tab);
@@ -904,6 +919,16 @@ async function startCameraOnlyRecording(cameraId, micId, recordingId, auth) {
   return { success: true };
 }
 
+// Close overlay window when user closes it manually (stop recording)
+chrome.windows.onRemoved.addListener((winId) => {
+  if (winId === overlayWindowId) {
+    overlayWindowId = null;
+    if (recordingState === 'recording' || recordingState === 'paused') {
+      handleStopRecording().catch(() => {});
+    }
+  }
+});
+
 // === Stop ===
 async function handleStopRecording() {
   console.log('[SW] handleStopRecording called');
@@ -931,6 +956,7 @@ async function handleStopRecording() {
     await removeBubble(bubbleTabId);
     bubbleTabId = null;
   }
+  await closeOverlayWindow();
 
   console.log('[SW] Sending stopRecording to recorder tab...');
   const stopResult = await forwardToRecorderTab({ action: 'stopRecording' });
@@ -1073,6 +1099,13 @@ async function autoUpload(duration, mode) {
   await resetToIdleAndCleanup(uploadError);
 }
 
+async function closeOverlayWindow() {
+  if (overlayWindowId != null) {
+    try { await chrome.windows.remove(overlayWindowId); } catch {}
+    overlayWindowId = null;
+  }
+}
+
 // === Reset state to idle after terminal upload failure ===
 // CRITICAL: without this, recordingState stays 'stopped' forever and popup is stuck
 async function resetToIdleAndCleanup(errorMsg) {
@@ -1097,6 +1130,7 @@ async function resetToIdleAndCleanup(errorMsg) {
   // Clean up IDB and recorder tab
   try { await forwardToRecorderTab({ action: 'discardRecording' }); } catch {}
   try { await closeRecorderTab(); } catch {}
+  try { await closeOverlayWindow(); } catch {}
 
   // Clean up bubble
   if (bubbleTabId) {
@@ -1127,6 +1161,7 @@ async function handleCancelRecording() {
     await removeBubble(bubbleTabId);
     bubbleTabId = null;
   }
+  await closeOverlayWindow();
 
   // Route to content script or recorder tab depending on mode
   if (isDesktopContentScript && activeTabId) {
