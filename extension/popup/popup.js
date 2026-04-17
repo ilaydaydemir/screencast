@@ -489,19 +489,58 @@ async function startRecording() {
       return;
     }
   } else {
-    // Internal page (new tab, chrome://*, etc.): recorder tab calls getDisplayMedia directly
-    // User activation transfers via chrome.runtime.sendMessage in MV3
-    const result = await sendMessage({
-      action: 'startRecording',
+    // Internal page: open a temporary regular tab, inject content script there
+    let tempTab;
+    try {
+      tempTab = await chrome.tabs.create({ url: 'https://www.google.com', active: true });
+      await new Promise((resolve) => {
+        const listener = (tabId, info) => {
+          if (tabId === tempTab.id && info.status === 'complete') {
+            chrome.tabs.onUpdated.removeListener(listener);
+            resolve();
+          }
+        };
+        chrome.tabs.onUpdated.addListener(listener);
+      });
+    } catch {
+      startBtn.disabled = false;
+      startBtn.textContent = 'Start Recording';
+      alert('Failed to open a page for recording.');
+      return;
+    }
+    const prep = await sendMessage({
+      action: 'prepareDesktopRecording',
       mode: currentMode,
-      desktopStreamId: null,
       cameraId: cameraSelect.value || null,
       micId: micSelect.value || null,
     });
-    if (!result || !result.success) {
+    if (!prep || !prep.success) {
       startBtn.disabled = false;
       startBtn.textContent = 'Start Recording';
-      alert(result?.error || 'Failed to start recording');
+      chrome.tabs.remove(tempTab.id).catch(() => {});
+      alert(prep?.error || 'Failed to prepare recording');
+      return;
+    }
+    await chrome.storage.session.set({
+      desktopRecordConfig: {
+        mode: currentMode,
+        cameraId: cameraSelect.value || null,
+        micId: micSelect.value || null,
+        recordingId: prep.recordingId,
+        userId: prep.userId,
+        authToken: prep.authToken,
+      },
+    });
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tempTab.id },
+        files: ['content/desktop-recorder.js'],
+      });
+    } catch {
+      startBtn.disabled = false;
+      startBtn.textContent = 'Start Recording';
+      chrome.tabs.remove(tempTab.id).catch(() => {});
+      alert('Failed to start recording.');
       return;
     }
   }
