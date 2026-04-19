@@ -16,7 +16,7 @@ import { formatDuration } from '@/lib/format'
 interface VideoPlayerProps {
   src: string
   title?: string
-  videoRef?: React.RefObject<HTMLVideoElement>
+  videoRef?: React.RefObject<HTMLVideoElement | null>
 }
 
 export function VideoPlayer(props: VideoPlayerProps) {

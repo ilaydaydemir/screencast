@@ -50,7 +50,7 @@ export function SubtitleGenerator({
 }: {
   videoUrl: string
   title: string
-  videoRef?: React.RefObject<HTMLVideoElement>
+  videoRef?: React.RefObject<HTMLVideoElement | null>
   onSegmentsChange?: (segs: Segment[]) => void
   recordingId?: string
   savedSrt?: string | null
