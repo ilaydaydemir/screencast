@@ -1,6 +1,30 @@
 export type Database = {
   public: {
     Tables: {
+      recording_comments: {
+        Row: {
+          id: string
+          recording_id: string
+          name: string
+          body: string
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          recording_id: string
+          name?: string
+          body: string
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          recording_id?: string
+          name?: string
+          body?: string
+          created_at?: string
+        }
+        Relationships: []
+      }
       recordings: {
         Row: {
           id: string

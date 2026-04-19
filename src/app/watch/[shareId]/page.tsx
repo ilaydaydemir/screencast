@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { formatDuration } from '@/lib/format'
 import { WatchPlayer } from './WatchPlayer'
+import { Comments } from '@/components/watch/Comments'
 
 interface Props {
   params: Promise<{ shareId: string }>
@@ -123,6 +124,7 @@ export default async function WatchPage({ params }: Props) {
           duration={recording.duration}
           shareId={shareId}
         />
+        <Comments shareId={shareId} />
       </div>
     </div>
   )

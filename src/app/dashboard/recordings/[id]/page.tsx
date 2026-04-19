@@ -6,13 +6,14 @@ import { Trash2, ArrowLeft, Share2, Check, Download, Scissors, RotateCcw } from 
 import { createClient } from '@/lib/supabase/client'
 import { SubtitleGenerator } from '@/components/subtitles/SubtitleGenerator'
 import { SocialExport } from '@/components/export/SocialExport'
+import { Comments } from '@/components/watch/Comments'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { formatDate, formatFileSize, formatDuration } from '@/lib/format'
 import type { Database } from '@/lib/supabase/types'
 
 type Recording = Database['public']['Tables']['recordings']['Row']
-type Tab = 'edit' | 'subtitles' | 'export'
+type Tab = 'edit' | 'subtitles' | 'export' | 'comments'
 interface Segment { id: number; start: number; end: number; text: string }
 interface CutRange { start: number; end: number }
 
@@ -163,6 +164,7 @@ export default function RecordingDetailPage() {
     { id: 'edit',      label: 'Edit' },
     { id: 'subtitles', label: 'Subtitles' },
     { id: 'export',    label: 'Export' },
+    { id: 'comments',  label: 'Comments' },
   ]
 
   return (
@@ -398,6 +400,12 @@ export default function RecordingDetailPage() {
             title={recording.title}
             segments={segments}
           />
+        )}
+
+        {tab === 'comments' && recording.share_id && (
+          <div className="rounded-xl border border-border bg-card p-4">
+            <Comments shareId={recording.share_id} recordingId={recording.id} />
+          </div>
         )}
       </div>
     </div>
