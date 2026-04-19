@@ -1,3 +1,5 @@
+export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[]
+
 export type Database = {
   public: {
     Tables: {
@@ -42,6 +44,7 @@ export type Database = {
           recording_mode: 'screen' | 'camera_only'
           status: 'processing' | 'ready' | 'failed'
           subtitle_srt: string | null
+          cuts: Json
           created_at: string
           updated_at: string
         }
@@ -61,6 +64,7 @@ export type Database = {
           recording_mode?: 'screen' | 'camera_only'
           status?: 'processing' | 'ready' | 'failed'
           subtitle_srt?: string | null
+          cuts?: Json
           created_at?: string
           updated_at?: string
         }
@@ -80,6 +84,7 @@ export type Database = {
           recording_mode?: 'screen' | 'camera_only'
           status?: 'processing' | 'ready' | 'failed'
           subtitle_srt?: string | null
+          cuts?: Json
           created_at?: string
           updated_at?: string
         }

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { useRouter, useParams } from 'next/navigation'
-import { Trash2, ArrowLeft, Share2, Check, Download, Scissors, RotateCcw } from 'lucide-react'
+import { Trash2, ArrowLeft, Share2, Check, Download, Scissors } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import { SubtitleGenerator } from '@/components/subtitles/SubtitleGenerator'
 import { SocialExport } from '@/components/export/SocialExport'
@@ -53,7 +53,13 @@ export default function RecordingDetailPage() {
         .select('*')
         .eq('id', params.id as string)
         .single()
-      if (data) { setRecording(data); setTitle(data.title) }
+      if (data) {
+        setRecording(data)
+        setTitle(data.title)
+        if (data.cuts && Array.isArray(data.cuts)) {
+          setCuts(data.cuts as unknown as CutRange[])
+        }
+      }
       setLoading(false)
     }
     load()
@@ -174,14 +180,6 @@ export default function RecordingDetailPage() {
     const pct  = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
     seek(pct * duration)
   }, [duration])
-
-  // ── Mark cut at current position ──────────────────────────
-  const markCut = () => {
-    const t = currentTime
-    const len = Math.min(5, duration - t)
-    if (len < 0.5) return
-    setCuts(prev => [...prev, { start: t, end: t + len }])
-  }
 
   const removeCut = (i: number) => setCuts(prev => prev.filter((_, idx) => idx !== i))
 
@@ -343,24 +341,14 @@ export default function RecordingDetailPage() {
             ))}
           </select>
 
-          {/* Mark cut */}
+          {/* Cut editor */}
           <button
-            onClick={markCut}
-            title="Mark 5s cut at playhead"
+            onClick={() => router.push(`/dashboard/recordings/${recording.id}/cut`)}
+            title="Open cut editor"
             className="flex items-center gap-1.5 rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-700 transition-colors"
           >
             <Scissors className="h-3.5 w-3.5" /> Cut
           </button>
-
-          {/* Reset cuts */}
-          {cuts.length > 0 && (
-            <button
-              onClick={() => setCuts([])}
-              className="flex items-center gap-1.5 rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-1.5 text-xs text-red-400 hover:bg-zinc-700 transition-colors"
-            >
-              <RotateCcw className="h-3 w-3" /> Clear {cuts.length} cut{cuts.length > 1 ? 's' : ''}
-            </button>
-          )}
 
           {/* Download */}
           {videoUrl && (
