@@ -41,10 +41,11 @@ export default function RecordingDetailPage() {
         setRecording(data)
         setTitle(data.title)
         if (data.storage_path) {
-          const { data: signed } = await supabase.storage
-            .from('recordings')
-            .createSignedUrl(data.storage_path, 3600)
-          if (signed) setVideoUrl(signed.signedUrl)
+          const res = await fetch(`/api/recordings/${data.id}/signed-url`)
+          if (res.ok) {
+            const { signedUrl } = await res.json()
+            setVideoUrl(signedUrl)
+          }
         }
       }
       setLoading(false)
