@@ -2,12 +2,11 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { useRouter, useParams } from 'next/navigation'
-import { Trash2, ArrowLeft, Share2, Check, Download, Scissors } from 'lucide-react'
+import { Trash2, ArrowLeft, Share2, Check, Download, Scissors, PencilLine } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import { SubtitleGenerator } from '@/components/subtitles/SubtitleGenerator'
 import { SocialExport } from '@/components/export/SocialExport'
 import { Comments } from '@/components/watch/Comments'
-import { AnnotationCanvas, AnnotationToolbar, useAnnotationEditor } from '@/components/editor/AnnotationEditor'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { formatDate, formatFileSize, formatDuration } from '@/lib/format'
@@ -34,13 +33,8 @@ export default function RecordingDetailPage() {
   const [trimOut, setTrimOut]     = useState(0)
   const [cuts, setCuts]           = useState<CutRange[]>([])
   const [speed, setSpeed]         = useState(1)
-  const [videoSize, setVideoSize] = useState({ w: 0, h: 0 })
-
   const videoRef = useRef<HTMLVideoElement>(null)
   const tlRef    = useRef<HTMLDivElement>(null)
-
-  // Annotation editor — hook manages all canvas/stroke state
-  const annotation = useAnnotationEditor(videoRef)
 
   const router   = useRouter()
   const params   = useParams()
@@ -78,8 +72,6 @@ export default function RecordingDetailPage() {
     if (!v || !videoUrl) return
     v.src = videoUrl
     const onMeta = () => {
-      // Capture intrinsic dimensions for annotation canvas sizing
-      setVideoSize({ w: v.videoWidth, h: v.videoHeight })
       if (!isFinite(v.duration) || v.duration < 0.1) {
         // webm from MediaRecorder has no duration header — force Chrome to scan
         const onDurationFix = () => {
@@ -220,56 +212,24 @@ export default function RecordingDetailPage() {
       {/* ── Editor layout ─────────────────────────────────── */}
       <div className="rounded-2xl overflow-hidden border border-border bg-zinc-950">
 
-        {/* Video + annotation canvas area */}
+        {/* Video area */}
         <div className="relative bg-black flex items-center justify-center" style={{ minHeight: 400 }}>
           <video
             ref={videoRef}
             crossOrigin="anonymous"
             className="max-h-[460px] w-full object-contain"
             playsInline
-            onClick={tab === 'edit' ? undefined : togglePlay}
-            style={{ cursor: tab === 'edit' ? 'none' : 'pointer' }}
+            onClick={togglePlay}
+            style={{ cursor: 'pointer' }}
           />
 
-          {/* Annotation canvas — overlays video only when on Edit tab */}
-          {tab === 'edit' && (
-            <AnnotationCanvas
-              videoRef={videoRef}
-              videoWidth={videoSize.w}
-              videoHeight={videoSize.h}
-              canvasRef={annotation.canvasRef}
-              strokesRef={annotation.strokesRef}
-              onMouseDown={annotation.onMouseDown}
-              onMouseMove={annotation.onMouseMove}
-              onMouseUp={annotation.onMouseUp}
-              cursor={annotation.cursor}
-              segments={segments}
-              currentTime={currentTime}
-              playing={playing}
-            />
-          )}
-
-          {/* Play overlay — only shown when not in draw mode */}
-          {!playing && tab !== 'edit' && (
+          {/* Play overlay */}
+          {!playing && (
             <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
               <div className="rounded-full bg-black/50 p-5">
                 <svg className="h-10 w-10 text-white fill-white" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
               </div>
             </div>
-          )}
-
-          {/* Compact play/pause button in draw mode (bottom-left, above canvas) */}
-          {tab === 'edit' && (
-            <button
-              onClick={togglePlay}
-              title={playing ? 'Pause' : 'Play'}
-              className="absolute bottom-3 left-3 z-20 flex items-center justify-center h-8 w-8 rounded-full bg-black/60 hover:bg-black/80 text-white transition-colors"
-            >
-              {playing
-                ? <svg className="h-3.5 w-3.5 fill-white" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
-                : <svg className="h-3.5 w-3.5 fill-white" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
-              }
-            </button>
           )}
         </div>
 
@@ -405,18 +365,14 @@ export default function RecordingDetailPage() {
         {tab === 'edit' && (
           <div className="space-y-3">
 
-            {/* ── Annotation toolbar ── */}
-            <AnnotationToolbar
-              tool={annotation.tool}
-              setTool={annotation.setTool}
-              color={annotation.color}
-              setColor={annotation.setColor}
-              size={annotation.size}
-              setSize={annotation.setSize}
-              strokeCount={annotation.strokes.length}
-              onUndo={annotation.undo}
-              onClear={annotation.clearAll}
-            />
+            {/* ── Open Annotation Editor ── */}
+            <button
+              onClick={() => router.push(`/dashboard/recordings/${recording.id}/annotate`)}
+              className="w-full flex items-center justify-center gap-2 rounded-xl border border-border bg-card px-4 py-6 text-sm font-medium hover:bg-muted/40 transition-colors"
+            >
+              <PencilLine className="h-5 w-5" />
+              Open Annotation Editor
+            </button>
 
             {/* ── Cut segments ── */}
             {cuts.length > 0 && (

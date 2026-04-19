@@ -45,6 +45,7 @@ export type Database = {
           status: 'processing' | 'ready' | 'failed'
           subtitle_srt: string | null
           cuts: Json
+          annotations: Json
           created_at: string
           updated_at: string
         }
@@ -65,6 +66,7 @@ export type Database = {
           status?: 'processing' | 'ready' | 'failed'
           subtitle_srt?: string | null
           cuts?: Json
+          annotations?: Json
           created_at?: string
           updated_at?: string
         }
@@ -85,6 +87,7 @@ export type Database = {
           status?: 'processing' | 'ready' | 'failed'
           subtitle_srt?: string | null
           cuts?: Json
+          annotations?: Json
           created_at?: string
           updated_at?: string
         }
