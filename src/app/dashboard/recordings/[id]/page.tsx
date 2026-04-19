@@ -61,7 +61,22 @@ export default function RecordingDetailPage() {
     const v = videoRef.current
     if (!v || !videoUrl) return
     v.src = videoUrl
-    const onMeta  = () => { setDuration(v.duration); setTrimOut(v.duration) }
+    const onMeta  = () => {
+      if (!isFinite(v.duration) || v.duration < 0.1) {
+        // webm from MediaRecorder has no duration header — force Chrome to scan
+        const onDurationFix = () => {
+          setDuration(v.duration)
+          setTrimOut(v.duration)
+          v.currentTime = 0
+          v.removeEventListener('seeked', onDurationFix)
+        }
+        v.addEventListener('seeked', onDurationFix)
+        v.currentTime = 1e101
+      } else {
+        setDuration(v.duration)
+        setTrimOut(v.duration)
+      }
+    }
     const onTime  = () => setCurrent(v.currentTime)
     const onPlay  = () => setPlaying(true)
     const onPause = () => setPlaying(false)
@@ -175,6 +190,7 @@ export default function RecordingDetailPage() {
         <div className="relative bg-black flex items-center justify-center" style={{ minHeight: 400 }}>
           <video
             ref={videoRef}
+            crossOrigin="anonymous"
             className="max-h-[460px] w-full object-contain"
             playsInline
             onClick={togglePlay}
