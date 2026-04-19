@@ -7,6 +7,7 @@ import { createClient } from '@/lib/supabase/client'
 import { SubtitleGenerator } from '@/components/subtitles/SubtitleGenerator'
 import { SocialExport } from '@/components/export/SocialExport'
 import { Comments } from '@/components/watch/Comments'
+import { AnnotationCanvas, AnnotationToolbar, useAnnotationEditor } from '@/components/editor/AnnotationEditor'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { formatDate, formatFileSize, formatDuration } from '@/lib/format'
@@ -33,11 +34,16 @@ export default function RecordingDetailPage() {
   const [trimOut, setTrimOut]     = useState(0)
   const [cuts, setCuts]           = useState<CutRange[]>([])
   const [speed, setSpeed]         = useState(1)
-  const videoRef  = useRef<HTMLVideoElement>(null)
-  const tlRef     = useRef<HTMLDivElement>(null)
+  const [videoSize, setVideoSize] = useState({ w: 0, h: 0 })
 
-  const router  = useRouter()
-  const params  = useParams()
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const tlRef    = useRef<HTMLDivElement>(null)
+
+  // Annotation editor — hook manages all canvas/stroke state
+  const annotation = useAnnotationEditor(videoRef)
+
+  const router   = useRouter()
+  const params   = useParams()
   const supabase = createClient()
 
   useEffect(() => {
@@ -65,7 +71,9 @@ export default function RecordingDetailPage() {
     const v = videoRef.current
     if (!v || !videoUrl) return
     v.src = videoUrl
-    const onMeta  = () => {
+    const onMeta = () => {
+      // Capture intrinsic dimensions for annotation canvas sizing
+      setVideoSize({ w: v.videoWidth, h: v.videoHeight })
       if (!isFinite(v.duration) || v.duration < 0.1) {
         // webm from MediaRecorder has no duration header — force Chrome to scan
         const onDurationFix = () => {
@@ -102,6 +110,29 @@ export default function RecordingDetailPage() {
   useEffect(() => {
     if (videoRef.current) videoRef.current.playbackRate = speed
   }, [speed])
+
+  // ── Cut-skip: only active when Edit tab is selected ───────
+  // Separate effect so it can see fresh `cuts` + `tab` without
+  // disturbing the main video-events effect above.
+  const tabRef  = useRef<Tab>('edit')
+  const cutsRef = useRef<CutRange[]>([])
+  useEffect(() => { tabRef.current  = tab  }, [tab])
+  useEffect(() => { cutsRef.current = cuts }, [cuts])
+  useEffect(() => {
+    const v = videoRef.current
+    if (!v) return
+    const onTime = () => {
+      if (tabRef.current !== 'edit') return
+      for (const cut of cutsRef.current) {
+        if (v.currentTime >= cut.start && v.currentTime < cut.end) {
+          v.currentTime = cut.end
+          break
+        }
+      }
+    }
+    v.addEventListener('timeupdate', onTime)
+    return () => v.removeEventListener('timeupdate', onTime)
+  }, []) // intentionally empty — reads from refs
 
   const togglePlay = () => {
     const v = videoRef.current
@@ -191,22 +222,56 @@ export default function RecordingDetailPage() {
       {/* ── Editor layout ─────────────────────────────────── */}
       <div className="rounded-2xl overflow-hidden border border-border bg-zinc-950">
 
-        {/* Video canvas area */}
+        {/* Video + annotation canvas area */}
         <div className="relative bg-black flex items-center justify-center" style={{ minHeight: 400 }}>
           <video
             ref={videoRef}
             crossOrigin="anonymous"
             className="max-h-[460px] w-full object-contain"
             playsInline
-            onClick={togglePlay}
-            style={{ cursor: 'pointer' }}
+            onClick={tab === 'edit' ? undefined : togglePlay}
+            style={{ cursor: tab === 'edit' ? 'none' : 'pointer' }}
           />
-          {!playing && (
+
+          {/* Annotation canvas — overlays video only when on Edit tab */}
+          {tab === 'edit' && (
+            <AnnotationCanvas
+              videoRef={videoRef}
+              videoWidth={videoSize.w}
+              videoHeight={videoSize.h}
+              canvasRef={annotation.canvasRef}
+              strokesRef={annotation.strokesRef}
+              onMouseDown={annotation.onMouseDown}
+              onMouseMove={annotation.onMouseMove}
+              onMouseUp={annotation.onMouseUp}
+              cursor={annotation.cursor}
+              segments={segments}
+              currentTime={currentTime}
+              playing={playing}
+            />
+          )}
+
+          {/* Play overlay — only shown when not in draw mode */}
+          {!playing && tab !== 'edit' && (
             <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
               <div className="rounded-full bg-black/50 p-5">
                 <svg className="h-10 w-10 text-white fill-white" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
               </div>
             </div>
+          )}
+
+          {/* Compact play/pause button in draw mode (bottom-left, above canvas) */}
+          {tab === 'edit' && (
+            <button
+              onClick={togglePlay}
+              title={playing ? 'Pause' : 'Play'}
+              className="absolute bottom-3 left-3 z-20 flex items-center justify-center h-8 w-8 rounded-full bg-black/60 hover:bg-black/80 text-white transition-colors"
+            >
+              {playing
+                ? <svg className="h-3.5 w-3.5 fill-white" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+                : <svg className="h-3.5 w-3.5 fill-white" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+              }
+            </button>
           )}
         </div>
 
@@ -321,10 +386,11 @@ export default function RecordingDetailPage() {
           placeholder="Recording title"
         />
         <div className="flex flex-wrap gap-4 text-xs text-muted-foreground px-1">
-          <span>⏱ {formatDuration(recording.duration)}</span>
-          <span>💾 {formatFileSize(recording.file_size)}</span>
-          <span>📅 {formatDate(recording.created_at)}</span>
-          <span>👁 {recording.view_count} views</span>
+          <span>{formatDuration(recording.duration)}</span>
+          <span>{formatFileSize(recording.file_size)}</span>
+          <span>{formatDate(recording.created_at)}</span>
+          <span>{recording.view_count} views</span>
+          {recording.mime_type && <span>{recording.mime_type}</span>}
         </div>
       </div>
 
@@ -350,6 +416,21 @@ export default function RecordingDetailPage() {
       <div className="mt-5">
         {tab === 'edit' && (
           <div className="space-y-3">
+
+            {/* ── Annotation toolbar ── */}
+            <AnnotationToolbar
+              tool={annotation.tool}
+              setTool={annotation.setTool}
+              color={annotation.color}
+              setColor={annotation.setColor}
+              size={annotation.size}
+              setSize={annotation.setSize}
+              strokeCount={annotation.strokes.length}
+              onUndo={annotation.undo}
+              onClear={annotation.clearAll}
+            />
+
+            {/* ── Cut segments ── */}
             {cuts.length > 0 && (
               <div className="rounded-xl border border-border bg-card p-4 space-y-2">
                 <h3 className="text-sm font-semibold">Cut segments</h3>
@@ -363,24 +444,14 @@ export default function RecordingDetailPage() {
                 ))}
               </div>
             )}
-            <div className="rounded-xl border border-border bg-card p-4">
-              <div className="grid grid-cols-2 gap-3 text-sm">
-                <div className="rounded-lg bg-muted/40 px-4 py-3">
-                  <div className="text-xs text-muted-foreground mb-1">Duration</div>
-                  <div className="font-medium">{formatDuration(recording.duration)}</div>
-                </div>
-                <div className="rounded-lg bg-muted/40 px-4 py-3">
-                  <div className="text-xs text-muted-foreground mb-1">File size</div>
-                  <div className="font-medium">{formatFileSize(recording.file_size)}</div>
-                </div>
-                <div className="rounded-lg bg-muted/40 px-4 py-3">
-                  <div className="text-xs text-muted-foreground mb-1">Format</div>
-                  <div className="font-medium">{recording.mime_type}</div>
-                </div>
-                <div className="rounded-lg bg-muted/40 px-4 py-3">
-                  <div className="text-xs text-muted-foreground mb-1">Created</div>
-                  <div className="font-medium">{formatDate(recording.created_at)}</div>
-                </div>
+
+            {/* ── Compact metadata ── */}
+            <div className="rounded-xl border border-border bg-card px-4 py-3">
+              <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-muted-foreground">
+                <span><span className="text-foreground/60 mr-1">Duration</span>{formatDuration(recording.duration)}</span>
+                <span><span className="text-foreground/60 mr-1">Size</span>{formatFileSize(recording.file_size)}</span>
+                {recording.mime_type && <span><span className="text-foreground/60 mr-1">Format</span>{recording.mime_type}</span>}
+                <span><span className="text-foreground/60 mr-1">Created</span>{formatDate(recording.created_at)}</span>
               </div>
             </div>
           </div>
