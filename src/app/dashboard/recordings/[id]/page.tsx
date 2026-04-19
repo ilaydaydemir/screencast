@@ -53,8 +53,11 @@ export default function RecordingDetailPage() {
     load()
   }, [params.id]) // eslint-disable-line
 
+  const cleanPath = (p: string | null | undefined) =>
+    p?.startsWith('recordings/') ? p.slice('recordings/'.length) : (p ?? '')
+
   const videoUrl = recording?.storage_path
-    ? supabase.storage.from('recordings').getPublicUrl(recording.storage_path).data.publicUrl
+    ? supabase.storage.from('recordings').getPublicUrl(cleanPath(recording.storage_path)).data.publicUrl
     : null
 
   // ── Video events ─────────────────────────────────────────

@@ -25,16 +25,19 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
       return { title: 'Recording Not Found' }
     }
 
+    const cleanPath = (p: string | null | undefined) =>
+      p?.startsWith('recordings/') ? p.slice('recordings/'.length) : (p ?? '')
+
     const videoUrl = recording.storage_path
       ? supabase.storage
           .from('recordings')
-          .getPublicUrl(recording.storage_path).data.publicUrl
+          .getPublicUrl(cleanPath(recording.storage_path)).data.publicUrl
       : undefined
 
     const thumbnailUrl = recording.thumbnail_path
       ? supabase.storage
           .from('recordings')
-          .getPublicUrl(recording.thumbnail_path).data.publicUrl
+          .getPublicUrl(cleanPath(recording.thumbnail_path)).data.publicUrl
       : undefined
 
     return {
@@ -103,11 +106,14 @@ export default async function WatchPage({ params }: Props) {
     )
   }
 
+  const cleanPath = (p: string | null | undefined) =>
+    p?.startsWith('recordings/') ? p.slice('recordings/'.length) : (p ?? '')
+
   const supabase = createAdminClient()
   const videoUrl = recording.storage_path
     ? supabase.storage
         .from('recordings')
-        .getPublicUrl(recording.storage_path).data.publicUrl
+        .getPublicUrl(cleanPath(recording.storage_path)).data.publicUrl
     : null
 
   return (

@@ -24,14 +24,17 @@ interface RecordingCardProps {
 export function RecordingCard({ recording, onDelete }: RecordingCardProps) {
   const supabase = createClient()
 
+  const cleanPath = (p: string | null | undefined) =>
+    p?.startsWith('recordings/') ? p.slice('recordings/'.length) : (p ?? '')
+
   const thumbnailUrl = recording.thumbnail_path
     ? supabase.storage
         .from('recordings')
-        .getPublicUrl(recording.thumbnail_path).data.publicUrl
+        .getPublicUrl(cleanPath(recording.thumbnail_path)).data.publicUrl
     : null
 
   const videoUrl = recording.storage_path
-    ? supabase.storage.from('recordings').getPublicUrl(recording.storage_path).data.publicUrl
+    ? supabase.storage.from('recordings').getPublicUrl(cleanPath(recording.storage_path)).data.publicUrl
     : null
 
   const copyShareLink = async () => {
