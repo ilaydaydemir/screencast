@@ -24,6 +24,7 @@ export default function RecordingDetailPage() {
   const [tab, setTab]             = useState<Tab>('edit')
   const [segments, setSegments]   = useState<Segment[]>([])
   const [copied, setCopied]       = useState(false)
+  const [videoUrl, setVideoUrl]   = useState<string | null>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
   const router   = useRouter()
   const params   = useParams()
@@ -36,7 +37,16 @@ export default function RecordingDetailPage() {
         .select('*')
         .eq('id', params.id as string)
         .single()
-      if (data) { setRecording(data); setTitle(data.title) }
+      if (data) {
+        setRecording(data)
+        setTitle(data.title)
+        if (data.storage_path) {
+          const { data: signed } = await supabase.storage
+            .from('recordings')
+            .createSignedUrl(data.storage_path, 3600)
+          if (signed) setVideoUrl(signed.signedUrl)
+        }
+      }
       setLoading(false)
     }
     load()
@@ -73,10 +83,6 @@ export default function RecordingDetailPage() {
   if (!recording) return (
     <div className="text-center py-24 text-muted-foreground">Recording not found</div>
   )
-
-  const videoUrl = recording.storage_path
-    ? supabase.storage.from('recordings').getPublicUrl(recording.storage_path).data.publicUrl
-    : null
 
   const TABS: { id: Tab; label: string }[] = [
     { id: 'edit',      label: 'Edit' },

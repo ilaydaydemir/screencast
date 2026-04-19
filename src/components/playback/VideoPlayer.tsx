@@ -94,8 +94,8 @@ export function VideoPlayer(props: VideoPlayerProps) {
 
   return (
     <div className="overflow-hidden rounded-lg bg-black">
-      <div className="relative cursor-pointer" onClick={togglePlay}>
-        <video ref={videoRef} src={src} className="w-full" playsInline />
+      <div className="relative aspect-video cursor-pointer" onClick={togglePlay}>
+        <video ref={videoRef} src={src} className="h-full w-full object-contain" playsInline />
         {!playing && (
           <div className="absolute inset-0 flex items-center justify-center">
             <div className="rounded-full bg-black/50 p-4">
