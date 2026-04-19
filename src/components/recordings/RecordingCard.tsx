@@ -30,6 +30,10 @@ export function RecordingCard({ recording, onDelete }: RecordingCardProps) {
         .getPublicUrl(recording.thumbnail_path).data.publicUrl
     : null
 
+  const videoUrl = recording.storage_path
+    ? supabase.storage.from('recordings').getPublicUrl(recording.storage_path).data.publicUrl
+    : null
+
   const copyShareLink = async () => {
     const shareUrl = `${window.location.origin}/watch/${recording.share_id}`
     await navigator.clipboard.writeText(shareUrl)
@@ -45,8 +49,16 @@ export function RecordingCard({ recording, onDelete }: RecordingCardProps) {
               alt={recording.title}
               className="h-full w-full object-cover"
             />
+          ) : videoUrl ? (
+            <video
+              src={videoUrl}
+              className="h-full w-full object-cover"
+              preload="metadata"
+              muted
+              playsInline
+            />
           ) : (
-            <div className="flex h-full items-center justify-center text-muted-foreground">
+            <div className="flex h-full items-center justify-center text-muted-foreground text-xs">
               No Preview
             </div>
           )}

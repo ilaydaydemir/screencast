@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { formatDuration } from '@/lib/format'
 import { SocialExport } from '@/components/export/SocialExport'
 import { SubtitleGenerator } from '@/components/subtitles/SubtitleGenerator'
@@ -13,9 +13,10 @@ interface WatchPlayerProps {
 }
 
 export function WatchPlayer({ videoUrl, title, duration, shareId }: WatchPlayerProps) {
-  const [copied, setCopied] = useState(false)
+  const [copied, setCopied]     = useState(false)
   const [showExport, setShowExport] = useState(false)
   const [showSubs, setShowSubs] = useState(false)
+  const videoRef = useRef<HTMLVideoElement>(null)
 
   const shareUrl = typeof window !== 'undefined'
     ? `${window.location.origin}/watch/${shareId}`
@@ -40,6 +41,7 @@ export function WatchPlayer({ videoUrl, title, duration, shareId }: WatchPlayerP
       {/* Video */}
       <div className="overflow-hidden rounded-2xl bg-black shadow-2xl">
         <video
+          ref={videoRef}
           src={videoUrl}
           controls
           className="block w-full"
@@ -57,24 +59,18 @@ export function WatchPlayer({ videoUrl, title, duration, shareId }: WatchPlayerP
             {formatDuration(duration)} recording
           </p>
         </div>
-        <div className="flex shrink-0 gap-2">
+        <div className="flex shrink-0 gap-2 flex-wrap justify-end">
           <button
             onClick={() => { setShowSubs(v => !v); setShowExport(false) }}
             className={`flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium transition-colors
-              ${showSubs
-                ? 'border-blue-500 bg-blue-500/10 text-blue-500'
-                : 'border-border bg-card hover:bg-muted'
-              }`}
+              ${showSubs ? 'border-blue-500 bg-blue-500/10 text-blue-500' : 'border-border bg-card hover:bg-muted'}`}
           >
             {showSubs ? '✕' : '💬'} Subtitles
           </button>
           <button
             onClick={() => { setShowExport(v => !v); setShowSubs(false) }}
             className={`flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium transition-colors
-              ${showExport
-                ? 'border-red-500 bg-red-500/10 text-red-500'
-                : 'border-border bg-card hover:bg-muted'
-              }`}
+              ${showExport ? 'border-red-500 bg-red-500/10 text-red-500' : 'border-border bg-card hover:bg-muted'}`}
           >
             {showExport ? '✕' : '📤'} Export
           </button>
@@ -82,7 +78,7 @@ export function WatchPlayer({ videoUrl, title, duration, shareId }: WatchPlayerP
             onClick={copyLink}
             className="flex items-center gap-2 rounded-lg border border-border bg-card px-4 py-2 text-sm font-medium transition-colors hover:bg-muted"
           >
-            {copied ? <><span className="text-green-500">✓</span> Copied!</> : <><span>🔗</span> Share</>}
+            {copied ? <><span className="text-green-500">✓</span> Copied!</> : <>🔗 Share</>}
           </button>
         </div>
       </div>
@@ -96,12 +92,12 @@ export function WatchPlayer({ videoUrl, title, duration, shareId }: WatchPlayerP
         <span className="break-all">{shareUrl}</span>
       </div>
 
-      {/* Subtitle panel */}
+      {/* Subtitle / cut editor */}
       {showSubs && (
-        <SubtitleGenerator videoUrl={videoUrl} title={title} />
+        <SubtitleGenerator videoUrl={videoUrl} title={title} videoRef={videoRef} />
       )}
 
-      {/* Social export panel */}
+      {/* Social export */}
       {showExport && (
         <SocialExport videoUrl={videoUrl} title={title} />
       )}

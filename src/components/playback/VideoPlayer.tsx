@@ -1,6 +1,7 @@
 'use client'
 
 import { useRef, useState, useEffect } from 'react'
+import type React from 'react'
 import {
   Play,
   Pause,
@@ -15,10 +16,13 @@ import { formatDuration } from '@/lib/format'
 interface VideoPlayerProps {
   src: string
   title?: string
+  videoRef?: React.RefObject<HTMLVideoElement>
 }
 
-export function VideoPlayer({ src, title }: VideoPlayerProps) {
-  const videoRef = useRef<HTMLVideoElement>(null)
+export function VideoPlayer(props: VideoPlayerProps) {
+  const { src, title } = props
+  const internalRef = useRef<HTMLVideoElement>(null)
+  const videoRef = props.videoRef ?? internalRef
   const [playing, setPlaying] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)

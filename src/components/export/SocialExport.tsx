@@ -17,7 +17,7 @@ type ExportState =
   | { phase: 'done'; preset: string }
   | { phase: 'error'; message: string }
 
-export function SocialExport({ videoUrl, title }: { videoUrl: string; title: string }) {
+export function SocialExport({ videoUrl, title, segments = [] }: { videoUrl: string; title: string; segments?: Array<{ id: number; start: number; end: number; text: string }> }) {
   const [state, setState] = useState<ExportState>({ phase: 'idle' })
 
   async function run(preset: Preset) {
@@ -97,6 +97,38 @@ export function SocialExport({ videoUrl, title }: { videoUrl: string; title: str
           // Main video
           ctx.drawImage(video, drawX, drawY, drawW, drawH)
 
+          // Draw subtitle if segments provided
+          if (segments.length > 0) {
+            const t = video.currentTime
+            const seg = segments.find(s => t >= s.start && t <= s.end)
+            if (seg) {
+              const fontSize = Math.round(cH * 0.045)
+              ctx.font = `bold ${fontSize}px sans-serif`
+              ctx.textAlign = 'center'
+              const maxW = cW * 0.85
+              const words = seg.text.split(' ')
+              const lines: string[] = []
+              let cur = ''
+              for (const w of words) {
+                const test = cur ? `${cur} ${w}` : w
+                if (ctx.measureText(test).width > maxW && cur) { lines.push(cur); cur = w }
+                else cur = test
+              }
+              if (cur) lines.push(cur)
+              const lh = fontSize * 1.35
+              const totalH = lines.length * lh
+              const baseY = cH * 0.88
+              lines.forEach((line, i) => {
+                const y = baseY - totalH + i * lh
+                ctx.fillStyle = 'rgba(0,0,0,0.7)'
+                const tw = ctx.measureText(line).width
+                ctx.fillRect(cW / 2 - tw / 2 - 8, y - fontSize, tw + 16, fontSize + 6)
+                ctx.fillStyle = '#ffffff'
+                ctx.fillText(line, cW / 2, y)
+              })
+            }
+          }
+
           const pct = Math.min(99, Math.round((video.currentTime / dur) * 100))
           setState(s => s.phase === 'encoding' ? { ...s, progress: pct } : s)
 
@@ -172,6 +204,10 @@ export function SocialExport({ videoUrl, title }: { videoUrl: string; title: str
           )
         })}
       </div>
+
+      {segments.length > 0 && (
+        <p className="mt-2 text-xs text-muted-foreground">✓ Subtitles will be burned into exported video</p>
+      )}
 
       {/* Encoding progress bar */}
       {state.phase === 'encoding' && (

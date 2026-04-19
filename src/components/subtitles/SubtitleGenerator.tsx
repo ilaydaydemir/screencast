@@ -1,6 +1,7 @@
 'use client'
 
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
+import { createClient } from '@/lib/supabase/client'
 
 interface Segment {
   id: number
@@ -43,15 +44,30 @@ export function SubtitleGenerator({
   videoUrl,
   title,
   videoRef,
+  onSegmentsChange,
+  recordingId,
+  savedSrt,
 }: {
   videoUrl: string
   title: string
   videoRef?: React.RefObject<HTMLVideoElement>
+  onSegmentsChange?: (segs: Segment[]) => void
+  recordingId?: string
+  savedSrt?: string | null
 }) {
   const [phase, setPhase] = useState<Phase>({ name: 'idle' })
   const [segments, setSegments] = useState<Segment[]>([])
   const [cuts, setCuts] = useState<Set<number>>(new Set())
   const editRef = useRef<Map<number, string>>(new Map())
+
+  useEffect(() => {
+    if (!savedSrt) return
+    const parsed = parseSRT(savedSrt)
+    setSegments(parsed)
+    setPhase({ name: 'done' })
+    onSegmentsChange?.(parsed)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [savedSrt])
 
   const generate = useCallback(async () => {
     try {
@@ -103,6 +119,7 @@ export function SubtitleGenerator({
         }))
 
       setSegments(segs)
+      onSegmentsChange?.(segs)
       setCuts(new Set())
       editRef.current.clear()
       setPhase({ name: 'done' })
@@ -152,6 +169,17 @@ export function SubtitleGenerator({
       )
       .join('\n\n')
     downloadText(lines, `${title.slice(0, 40)}.srt`, 'text/srt')
+  }
+
+  // ── Save to DB ───────────────────────────────────────────
+  const saveToDB = async () => {
+    if (!recordingId) return
+    const supabase = createClient()
+    const kept = getFinalSegments().filter(s => !cuts.has(s.id))
+    const lines = kept.map((s, i) =>
+      `${i + 1}\n${srtTime(s.start)} --> ${srtTime(s.end)}\n${s.text}`
+    ).join('\n\n')
+    await supabase.from('recordings').update({ subtitle_srt: lines }).eq('id', recordingId)
   }
 
   // ── TXT export ───────────────────────────────────────────
@@ -308,6 +336,14 @@ export function SubtitleGenerator({
             >
               ↓ .txt
             </button>
+            {recordingId && (
+              <button
+                onClick={saveToDB}
+                className="rounded-lg border border-border px-3 py-1.5 text-xs font-semibold hover:bg-muted transition-colors"
+              >
+                Save subtitles
+              </button>
+            )}
             <button
               onClick={() => { setPhase({ name: 'idle' }); setSegments([]); setCuts(new Set()) }}
               className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted-foreground hover:bg-muted transition-colors"
@@ -458,6 +494,24 @@ function srtTime(s: number) {
 }
 
 function pad(n: number) { return String(n).padStart(2, '0') }
+
+function parseSRT(srt: string): Segment[] {
+  const blocks = srt.trim().split(/\n\n+/)
+  return blocks.flatMap((block, i) => {
+    const lines = block.trim().split('\n')
+    if (lines.length < 3) return []
+    const times = lines[1].match(/(\d+):(\d+):(\d+),(\d+) --> (\d+):(\d+):(\d+),(\d+)/)
+    if (!times) return []
+    const toSec = (h: string, m: string, s: string, ms: string) =>
+      Number(h) * 3600 + Number(m) * 60 + Number(s) + Number(ms) / 1000
+    return [{
+      id: i,
+      start: toSec(times[1], times[2], times[3], times[4]),
+      end:   toSec(times[5], times[6], times[7], times[8]),
+      text:  lines.slice(2).join(' '),
+    }]
+  })
+}
 
 function downloadText(content: string, filename: string, type: string) {
   const blob = new Blob([content], { type })
